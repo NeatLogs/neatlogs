@@ -1,0 +1,9 @@
+include LICENSE
+include README.MD
+include requirements.txt
+recursive-include neatlogs *.py
+recursive-exclude neatlogs __pycache__
+recursive-exclude neatlogs *.pyc
+recursive-exclude neatlogs *.pyo
+recursive-exclude neatlogs *.pyd
+recursive-exclude neatlogs .DS_Store 

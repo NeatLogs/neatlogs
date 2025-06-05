@@ -1,0 +1,6 @@
+# Core dependencies
+litellm>=1.59.8
+requests>=2.32.3
+python-dotenv>=1.0.1
+packaging>=24.2
+importlib-metadata>=8.5.0
