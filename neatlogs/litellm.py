@@ -28,12 +28,15 @@ class LiteLLMProvider:
     Handles the interception and logging of LLM interactions.
     Simplified to focus on conversation logging functionality.
     """
-    def __init__(self, trace_id, client= None, api_key= None):
+    def __init__(self, trace_id, client=None, api_key=None, tags=None):
         """
         Initialize the provider with a log file.
         
         Args:
-            log_file (str): Path to the log file (defaults to demo.txt)
+            trace_id (str): Unique identifier for the tracking session
+            client (str, optional): Client identifier
+            api_key (str, optional): API key for authentication
+            tags (dict, optional): Dictionary of tags to associate with the tracking session
         """
         self.original_create = None #original method that we are patching
         self.conversation_ring = []
@@ -41,6 +44,7 @@ class LiteLLMProvider:
         self.client = client
         self.trace_id = trace_id
         self.api_key = api_key
+        self.tags = tags or {}
 
         '''        
         Ring Buffer:
@@ -108,7 +112,11 @@ class LiteLLMProvider:
                 print("No keyword arguments")
                 
             # Call original method to get response
-            response = self.original_create(*args, **kwargs)
+            try:
+                response = self.original_create(*args, **kwargs)
+            except Exception as e:
+                self.handle_error(e, kwargs)
+                raise e
             
             print("\n===== Output =====")
             print(f"Response: {response}")
@@ -125,7 +133,7 @@ class LiteLLMProvider:
         Pre-processing hook that structures data before the log parser processes it.
         """
         # Extract basic information
-        save_data_in_neat_logs(kwargs, response, self.trace_id, self.api_key)
+        save_data_in_neat_logs(kwargs, response, self.trace_id, self.api_key, tags=self.tags)
         prompt = kwargs.get("messages", kwargs.get("prompt", "N/A"))
         model = response.model if hasattr(response, "model") else "unknown"
         completion = response.choices[0].message.content if hasattr(response, "choices") else str(response)
@@ -137,7 +145,8 @@ class LiteLLMProvider:
             model=model,
             timestamp=datetime.now().isoformat(),
             metadata={
-                "total_tokens": response.usage.total_tokens if hasattr(response, "usage") else 0
+                "total_tokens": response.usage.total_tokens if hasattr(response, "usage") else 0,
+                "tags": self.tags
             }
         )
         
@@ -173,13 +182,21 @@ class LiteLLMProvider:
             }
             for event in history
         ]
+    
+    def handle_error(self, e, kwargs):
+        """
+        Handle errors in the original method.
+        """
+        print(f"Error in original method: {e}")
+        save_data_in_neat_logs(kwargs, None, self.trace_id, self.api_key, error=e, tags=self.tags)
+        return None
 
 
 # Apply the parser decorator to the provider class
 add_parser_to_provider(LiteLLMProvider)
 
 
-def _save_data_in_background(kwargs: dict, response: Any, trace_id, api_key):
+def _save_data_in_background(kwargs: dict, response: Any, trace_id, api_key, error=None, tags=None):
     """Background thread function to send data to server."""
     url = "https://app.neatlogs.com/api/data"
     headers = {"Content-Type": "application/json"}
@@ -206,6 +223,8 @@ def _save_data_in_background(kwargs: dict, response: Any, trace_id, api_key):
             "dataDump": json.dumps(trace_data),
             "projectAPIKey": api_key,
             "externalTraceId": trace_id,
+            "error": error,
+            "tags": tags or {},
             "timestamp": datetime.now().timestamp()
         }
 
@@ -214,14 +233,22 @@ def _save_data_in_background(kwargs: dict, response: Any, trace_id, api_key):
     except Exception as e:
         print("Error in sending logs:", e)
 
-def save_data_in_neat_logs(kwargs: dict, response: Any, trace_id, api_key):
+def save_data_in_neat_logs(kwargs: dict, response: Any, trace_id, api_key, error=None, tags=None):
     """
     Non-blocking function that sends data to the server in a background thread.
     The thread will continue running even after the main program exits.
+    
+    Args:
+        kwargs (dict): The input arguments for the LLM call
+        response (Any): The response from the LLM
+        trace_id (str): Unique identifier for the tracking session
+        api_key (str): API key for authentication
+        error (Exception, optional): Any error that occurred
+        tags (dict, optional): Dictionary of tags to associate with the tracking session
     """
     thread = threading.Thread(
         target=_save_data_in_background,
-        args=(kwargs, response, trace_id, api_key),
+        args=(kwargs, response, trace_id, api_key, error, tags),
         daemon=False  # Set to False so the thread continues after main program exits
     )
     thread.start()

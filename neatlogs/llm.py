@@ -44,14 +44,35 @@ class LLMTracker:
         Initialize the LLM tracker.
 
         Args:
+            api_key (str): The API key for authentication
             client (str): Client identifier for tracking purposes
                          Defaults to "0001"
         """
         self.client = client
         self.trace_id = str(uuid4())
         self.api_key = api_key
+        self.tags = {}
         logger.info(f"Default client {self.client}")
         print("****************\nGenerated ID: ", self.trace_id, "\n*********\n\n\n\n")
+
+    def add_tags(self, tags):
+        """
+        Add tags to the current tracking session.
+        If tags with the same keys already exist, they will be updated.
+        
+        Args:
+            tags (dict): A dictionary of tags to add/update
+        """
+        if not isinstance(tags, dict):
+            raise ValueError("tags must be a dictionary")
+            
+        self.tags.update(tags)
+        
+        # Update tags in the provider if it exists
+        if self.llm_provider:
+            self.llm_provider.tags = self.tags
+            
+        logger.info(f"Updated tags: {self.tags}")
 
     def override_api(self):
         """
@@ -85,7 +106,12 @@ class LLMTracker:
                         logger.info(f"LiteLLM version {module_version} detected. Applying patches...")
                         # Initialize and apply LiteLLM provider patches
                         if not self.llm_provider:
-                            self.llm_provider = LiteLLMProvider(trace_id=self.trace_id, client=self.client, api_key=self.api_key)  # The class from .litellm file
+                            self.llm_provider = LiteLLMProvider(
+                                trace_id=self.trace_id, 
+                                client=self.client, 
+                                api_key=self.api_key,
+                                tags=self.tags
+                            )  # The class from .litellm file
                             self.llm_provider.override()  # Apply override
                         logger.info("LiteLLM override applied successfully.")
                     else:
