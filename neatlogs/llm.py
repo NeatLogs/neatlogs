@@ -51,22 +51,30 @@ class LLMTracker:
         self.client = client
         self.trace_id = str(uuid4())
         self.api_key = api_key
-        self.tags = {}
+        self.tags = []  # Initialize tags as an empty list instead of dict
         logger.info(f"Default client {self.client}")
         print("****************\nGenerated ID: ", self.trace_id, "\n*********\n\n\n\n")
 
     def add_tags(self, tags):
         """
         Add tags to the current tracking session.
-        If tags with the same keys already exist, they will be updated.
         
         Args:
-            tags (dict): A dictionary of tags to add/update
+            tags (list): A list of tags to add. Each tag should be a string or number.
         """
-        if not isinstance(tags, dict):
-            raise ValueError("tags must be a dictionary")
+        if not isinstance(tags, list):
+            raise ValueError("tags must be a list")
+        
+        # Validate each tag
+        valid_tags = []
+        for tag in tags:
+            if isinstance(tag, (str, int, float, bool)):
+                valid_tags.append(str(tag))  # Convert all tags to strings for consistency
+            else:
+                logger.warning(f"Skipping invalid tag {tag}. Tags must be strings, numbers, or booleans.")
             
-        self.tags.update(tags)
+        # Convert list to set to remove duplicates, then back to list
+        self.tags = list(set(self.tags + valid_tags))
         
         # Update tags in the provider if it exists
         if self.llm_provider:
