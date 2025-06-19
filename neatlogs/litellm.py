@@ -231,7 +231,7 @@ def _save_data_in_background(kwargs: dict, response: Any, trace_id, api_key, err
             trace_data["tags"] = tags
 
         if error_info:
-            trace_data["error"] = json.dumps(error_info)
+            trace_data["error"] = error_info
 
         
         api_data = {

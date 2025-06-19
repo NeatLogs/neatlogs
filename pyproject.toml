@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "neatlogs"
-version = "0.5.0"
+version = "0.7.0"
 description = "A Python package for extracting and managing logs to build a collaborative workspace for agents"
 readme = "README.MD"
 requires-python = ">=3.8"
