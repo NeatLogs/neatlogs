@@ -219,7 +219,6 @@ def _save_data_in_background(kwargs: dict, response: Any, trace_id, api_key, err
             "response": json.dumps(json_data)
         }
 
-        # Convert error to a serializable format
         error_info = None
         if error is not None:
             error_info = {
@@ -228,12 +227,17 @@ def _save_data_in_background(kwargs: dict, response: Any, trace_id, api_key, err
                 "args": getattr(error, 'args', None)
             }
 
+        if tags:
+            trace_data["tags"] = tags
+
+        if error_info:
+            trace_data["error"] = json.dumps(error_info)
+
+        
         api_data = {
             "dataDump": json.dumps(trace_data),
             "projectAPIKey": api_key,
             "externalTraceId": trace_id,
-            "error": error_info,  # Use the serialized error info instead
-            "tags": tags or [],  # Ensure tags is a list
             "timestamp": datetime.now().timestamp()
         }
 
