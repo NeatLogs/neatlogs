@@ -2,8 +2,8 @@
 ## Quick Start
 
 ```python
-import NeatLogs as nl
+import neatlogs
 
-# Initialize logging
-nl.init()
+## Get API key from neatlogs.com
+neatlogs.init(api_key="xyz")
 
