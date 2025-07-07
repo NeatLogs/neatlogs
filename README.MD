@@ -73,7 +73,7 @@ neatlogs.init("your-project-api-key-here")
 
 ## Supported Frameworks
 
-### LiteLLM (Primary Support)
+<!-- ### LiteLLM (Primary Support)
 
 Neatlogs seamlessly integrates with [LiteLLM](https://github.com/BerriAI/litellm) v1.3.1+:
 
@@ -89,13 +89,8 @@ response = litellm.completion(
     model="gpt-3.5-turbo",
     messages=[{"role": "user", "content": "Hello world"}]
 )
-```
-
-### CrewAI Integration
-
-Neatlogs offers seamless integration with CrewAI for multi-agent applications:
-
-```python
+``` -->
+<!-- 
 import neatlogs
 from crewai import Agent, Task, Crew
 
@@ -108,6 +103,21 @@ agent = Agent(
     goal="Analyze data and provide insights",
     backstory="You are an expert data analyst..."
 )
+
+# All agent interactions are automatically traced
+ -->
+
+### CrewAI Integration
+
+Neatlogs offers seamless integration with CrewAI for multi-agent applications:
+
+In your main.py add this
+
+```python
+import neatlogs
+
+# Initialize Neatlogs before creating your crew
+neatlogs.init("your-project-api-key")
 
 # All agent interactions are automatically traced
 ```
@@ -130,7 +140,7 @@ tracker.add_tags(["production", "customer-support", "v2.1"])
 # All subsequent LLM calls will be tagged
 ```
 
-### Stop Tracking
+<!-- ### Stop Tracking
 
 Temporarily disable tracking when needed:
 
@@ -139,7 +149,7 @@ Temporarily disable tracking when needed:
 tracker.stop_instrumenting()
 
 # Your LLM calls won't be tracked until you reinitialize
-```
+``` -->
 
 ## What Gets Tracked?
 
@@ -223,7 +233,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 Having issues? We're here to help!
 
 - 📧 Email: hello@neatlogs.com
-- 💬 Discord: [Join our community](https://discord.gg/neatlogs)
+<!-- - 💬 Discord: [Join our community](https://discord.gg/neatlogs) -->
 - 📖 Docs: [docs.neatlogs.com](https://docs.neatlogs.com)
 - 🐛 Issues: [GitHub Issues](https://github.com/NeatLogs/neatlogs/issues)
 
