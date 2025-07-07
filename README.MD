@@ -208,17 +208,11 @@ Once your traces are captured, use the Neatlogs platform to:
 **Q: Do I need to change my existing code?**
 A: No! Just add `neatlogs.init()` and your existing LLM calls are automatically tracked.
 
-**Q: What about data privacy?**
-A: Traces are sent securely to Neatlogs servers. Check our privacy policy for details.
-
 **Q: Can I use this in production?**
 A: Yes! Neatlogs is designed for production use with minimal performance impact.
 
 **Q: What LLM providers are supported?**
 A: Any provider supported by LiteLLM (OpenAI, Anthropic, Azure, local models, etc.)
-
-**Q: How much does it cost?**
-A: Visit [neatlogs.com](https://neatlogs.com) for current pricing information.
 
 ## Contributing
 
@@ -231,9 +225,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## Support
 
 Having issues? We're here to help!
-
-- 📧 Email: hello@neatlogs.com
 <!-- - 💬 Discord: [Join our community](https://discord.gg/neatlogs) -->
+- 📧 Email: hello@neatlogs.com
 - 📖 Docs: [docs.neatlogs.com](https://docs.neatlogs.com)
 - 🐛 Issues: [GitHub Issues](https://github.com/NeatLogs/neatlogs/issues)
 
