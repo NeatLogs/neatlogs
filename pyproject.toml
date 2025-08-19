@@ -1,37 +1,43 @@
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "neatlogs"
-version = "0.7.0"
-description = "A Python package for extracting and managing logs to build a collaborative workspace for agents"
-readme = "README.MD"
-requires-python = ">=3.8"
+version = "1.0.0"
+description = "A Python package for extracting and managing LLM logs to build a collaborative workspace"
+readme = "README.md"
 license = {text = "MIT"}
 authors = [
-    {name = "Shubham Kanyal", email = "your.email@example.com"}
+    {name = "Neatlogs", email = "hello@neatlogs.com"}
 ]
+keywords = ["llm", "tracking", "monitoring", "logging", "ai", "machine-learning", "observability", "collboration"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: System :: Logging",
+    "Topic :: System :: Monitoring",
 ]
-dependencies = [
-    "litellm>=1.59.8",
-    "python-dotenv>=1.0.1",
-]
+requires-python = ">=3.8"
+dependencies = []
 
 [project.urls]
 Homepage = "https://github.com/NeatLogs/neatlogs"
 Repository = "https://github.com/NeatLogs/neatlogs.git"
 Issues = "https://github.com/NeatLogs/neatlogs/issues"
+Documentation = "https://docs.neatlogs.com/"
 
-[tool.hatch.build.targets.wheel]
-packages = ["neatlogs"] 
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["neatlogs"]

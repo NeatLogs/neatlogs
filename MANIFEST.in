@@ -1,9 +1,22 @@
+include README.md
 include LICENSE
-include README.MD
-include requirements.txt
+include pyproject.toml
+
 recursive-include neatlogs *.py
-recursive-exclude neatlogs __pycache__
-recursive-exclude neatlogs *.pyc
-recursive-exclude neatlogs *.pyo
-recursive-exclude neatlogs *.pyd
-recursive-exclude neatlogs .DS_Store 
+recursive-include neatlogs *.md
+recursive-include neatlogs *.txt
+recursive-include neatlogs *.yml
+recursive-include neatlogs *.yaml
+
+global-exclude __pycache__
+global-exclude *.py[cod]
+global-exclude *.so
+global-exclude .DS_Store
+global-exclude .git
+global-exclude .gitignore
+global-exclude .env
+global-exclude *.log
+global-exclude venv/
+global-exclude .venv/
+global-exclude .python-version
+include uv.lock
