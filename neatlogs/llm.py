@@ -87,7 +87,7 @@ class LLMTracker:
         Overrides key methods of the specified API to record events.
         
         This method:
-        1. Checks if supported APIs are imported
+        1. Attempts to import supported APIs
         2. Verifies version compatibility
         3. Applies appropriate provider patches
         
@@ -95,10 +95,10 @@ class LLMTracker:
         """
         # Iterate through all supported APIs
         for api in self.SUPPORTED_APIS:
-            # Check if the API module is imported in the current session
-            if api in sys.modules:
-                # Import the module dynamically
+            try:
+                # Try to import the module (import_module handles already-imported modules gracefully)
                 module = import_module(api)
+                logger.info(f"Successfully imported {api} module.")
                 
                 # Handle LiteLLM specifically
                 if api == "litellm":
@@ -127,6 +127,13 @@ class LLMTracker:
                     
                     # Exit after patching LiteLLM (no need to patch underlying APIs)
                     return
+                    
+            except ImportError as e:
+                logger.debug(f"Module {api} not found: {e}")
+                continue
+            except Exception as e:
+                logger.warning(f"Error importing {api} module: {e}")
+                continue
 
         # Log warning if no supported API modules were found
         logger.warning("No supported LLM module found. Only LiteLLM>=1.3.1 is supported.")
