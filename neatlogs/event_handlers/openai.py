@@ -10,10 +10,8 @@ import json
 import logging
 from typing import Dict, List, Any, Optional, Union
 from .base import BaseEventHandler
-from ..semconv import (
-    LLMAttributes, MessageAttributes, LLMRequestTypeValues, LLMEvents,
-    format_tools_for_attribute
-)
+from ..token_counting import estimate_cost
+from ..stream_wrapper import NeatlogsStreamWrapper
 
 
 class OpenAIHandler(BaseEventHandler):
@@ -95,7 +93,7 @@ class OpenAIHandler(BaseEventHandler):
     def handle_call_start(self, span: 'LLMSpan', *args, **kwargs):
         super().handle_call_start(span, *args, **kwargs)
 
-    # --- Streaming Support ---
+    # --- Advanced Streaming Support ---
 
     def wrap_stream_method(self, original_method, provider: str):
         from functools import wraps
@@ -110,28 +108,13 @@ class OpenAIHandler(BaseEventHandler):
 
             try:
                 stream = original_method(*args, **kwargs)
-                return self.handle_stream_response(span, stream)
+                # Use NeatlogsStreamWrapper for proper telemetry collection
+                return NeatlogsStreamWrapper(stream, span, kwargs)
             except Exception as e:
                 self.handle_call_end(span, None, success=False, error=e)
                 raise
 
         return wrapped
-
-    def handle_stream_response(self, span: 'LLMSpan', stream: Any):
-        full_completion = ""
-        final_chunk = None
-
-        for chunk in stream:
-            self.process_stream_chunk(span, chunk)
-            if hasattr(chunk, 'choices') and chunk.choices:
-                delta = chunk.choices[0].delta
-                if hasattr(delta, 'content') and delta.content:
-                    full_completion += delta.content
-            final_chunk = chunk
-            yield chunk
-
-        span.completion = full_completion
-        self.finalize_stream_span(span, final_chunk)
 
     def wrap_async_stream_method(self, original_method, provider: str):
         from functools import wraps
@@ -146,46 +129,10 @@ class OpenAIHandler(BaseEventHandler):
 
             try:
                 stream = await original_method(*args, **kwargs)
-                return self.handle_async_stream_response(span, stream)
+                # Use NeatlogsStreamWrapper for proper telemetry collection
+                return NeatlogsStreamWrapper(stream, span, kwargs)
             except Exception as e:
                 self.handle_call_end(span, None, success=False, error=e)
                 raise
 
         return wrapped
-
-    async def handle_async_stream_response(self, span: 'LLMSpan', stream: Any):
-        full_completion = ""
-        final_chunk = None
-
-        async for chunk in stream:
-            self.process_stream_chunk(span, chunk)
-            if hasattr(chunk, 'choices') and chunk.choices:
-                delta = chunk.choices[0].delta
-                if hasattr(delta, 'content') and delta.content:
-                    full_completion += delta.content
-            final_chunk = chunk
-            yield chunk
-
-        span.completion = full_completion
-        self.finalize_stream_span(span, final_chunk)
-
-    def process_stream_chunk(self, span: 'LLMSpan', chunk: Any):
-
-        if hasattr(chunk, 'choices') and chunk.choices:
-            delta = chunk.choices[0].delta
-
-    def finalize_stream_span(self, span: 'LLMSpan', final_chunk: Any, error: Optional[Exception] = None):
-        if error:
-            self.handle_call_end(span, None, success=False, error=error)
-            return
-
-        if final_chunk:
-            # Some data is only in the final chunk
-            response_data = self.extract_response_data(final_chunk)
-            span.prompt_tokens = response_data.get('prompt_tokens', 0)
-            span.completion_tokens = response_data.get('completion_tokens', 0)
-            span.total_tokens = response_data.get('total_tokens', 0)
-            span.cost = self.estimate_cost(
-                span.model, span.prompt_tokens, span.completion_tokens)
-
-        self.handle_call_end(span, final_chunk, success=True)

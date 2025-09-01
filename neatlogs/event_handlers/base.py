@@ -1,8 +1,17 @@
 """
-Base Event Handler for NeatLogs Tracker
-======================================
+Base Event Handler for Neatlogs
+==============================
+This module defines an abstract base class for LLM provider event handlers used by
+Neatlogs. It provides a unified interface for extracting and managing telemetry
+from various LLM APIs (OpenAI, Anthropic, Google, etc.) and frameworks, and is
+intended to be subclassed for provider-specific logic.
 
-Provides the foundation for provider-specific event handlers.
+Responsibilities:
+    - Manage LLM span lifecycles (start/end tracking)
+    - Extract request and response data in a consistent, provider-agnostic way
+    - Provide hooks for synchronous and asynchronous API calls, including streaming
+
+All provider handler implementations in Neatlogs should inherit from BaseEventHandler.
 """
 
 from abc import ABC, abstractmethod
@@ -14,13 +23,35 @@ from ..token_counting import estimate_cost
 
 
 class BaseEventHandler(ABC):
-    """Base class for all LLM provider event handlers"""
+    """
+    Abstract base class for all Neatlogs LLM provider event handlers.
+
+    Defines the public interface and common logic for extracting, normalizing,
+    and tracking LLM API calls and responses. All subclasses must implement message
+    and response extractors suited for their provider/API.
+
+    Instantiated by subclasses in the patchers layer; not used directly.
+    """
 
     def __init__(self, tracker):
         self.tracker = tracker
 
     def create_span(self, model: str, provider: str, framework: str = None, operation: str = "llm_call") -> 'LLMSpan':
-        """Create a new LLM span with standardized attributes"""
+        """
+        Create a new LLMSpan object pre-filled with standard metadata for Neatlogs.
+
+        Args:
+            model (str): The model invoked (e.g., "gpt-3.5-turbo").
+            provider (str): Provider name (e.g., "openai", "anthropic").
+            framework (str, optional): Active agentic framework, if applicable.
+            operation (str): The telemetry operation type. Defaults to "llm_call".
+
+        Returns:
+            LLMSpan: New span instance with common attributes set for tracking.
+
+        Note:
+            This method initializes, but does not finish, the span.
+        """
         from ..core import LLMSpan  # Import here to avoid circular dependency
 
         span = LLMSpan(
@@ -34,7 +65,7 @@ class BaseEventHandler(ABC):
             tags=self.tracker.tags
         )
 
-        # Set common attributes using semantic conventions
+        # Set common attributes using semantic conventions (future: extend span attributes)
         common_attrs = get_common_span_attributes(
             session_id=self.tracker.session_id,
             agent_id=self.tracker.agent_id,
@@ -108,10 +139,13 @@ class BaseEventHandler(ABC):
     def wrap_method(self, original_method, provider: str, framework: str = None):
         """Generic method wrapper for non-streaming LLM calls"""
         from functools import wraps
-        from ..core import get_current_framework
+        from ..core import get_current_framework, is_patching_suppressed
 
         @wraps(original_method)
         def wrapped(*args, **kwargs):
+            if is_patching_suppressed():
+                return original_method(*args, **kwargs)
+
             # For LiteLLM, stream may be a kwarg in the main method
             if kwargs.get('stream', False):
                 return self.wrap_stream_method(original_method, provider)(*args, **kwargs)
@@ -137,6 +171,36 @@ class BaseEventHandler(ABC):
 
         return wrapped
 
+    def wrap_async_method(self, original_method, provider: str, framework: str = None):
+        """Generic method wrapper for non-streaming async LLM calls"""
+        from functools import wraps
+        from ..core import get_current_framework, is_patching_suppressed
+
+        @wraps(original_method)
+        async def wrapped(*args, **kwargs):
+            if is_patching_suppressed():
+                return await original_method(*args, **kwargs)
+
+            if kwargs.get('stream', False):
+                return self.wrap_async_stream_method(original_method, provider)(*args, **kwargs)
+
+            model = kwargs.get('model', 'unknown')
+            _framework = framework or get_current_framework()
+
+            span = self.create_span(
+                model=model, provider=provider, framework=_framework)
+
+            self.handle_call_start(span, *args, **kwargs)
+
+            try:
+                response = await original_method(*args, **kwargs)
+                self.handle_call_end(span, response, success=True)
+                return response
+            except Exception as e:
+                self.handle_call_end(span, None, success=False, error=e)
+                raise
+
+        return wrapped
     # --- Streaming Placeholders ---
     # Subclasses should implement these if they have dedicated streaming methods
 

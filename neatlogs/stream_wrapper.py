@@ -1,16 +1,26 @@
-"""NeatLogs Tracker stream wrapper implementation.
+"""
+Neatlogs stream wrapper implementation.
+=======================================
 
-This module provides wrappers for streaming functionality,
-It instruments streams to collect telemetry data for monitoring and analysis.
+This module provides wrappers for LLM/AI streaming responses.
+Streams are instrumented to collect telemetry and chunked content for monitoring,
+enabling accurate and detailed logging of streaming LLM API usage.
 """
 
 import time
-from typing import Any, AsyncIterator, Iterator
+from typing import Any,  Iterator
 from .core import LLMSpan
-from .semconv import SpanAttributes, MessageAttributes
+from .semconv import MessageAttributes
 
-class NeatLogsStreamWrapper:
-    """Wrapper for streaming responses."""
+
+class NeatlogsStreamWrapper:
+    """
+    Wrapper for streaming responses.
+
+    This class provides an iterator interface and batch/finish management for streamed
+    LLM API responses. It captures chunk content, tracks metadata, and signals span
+    completion after the stream ends for comprehensive telemetry.
+    """
 
     def __init__(self, stream: Any, span: LLMSpan, request_kwargs: dict):
         self._stream = stream
@@ -38,6 +48,15 @@ class NeatLogsStreamWrapper:
             self._finalize_stream()
             raise
 
+    def __enter__(self):
+        """Enter the context manager."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Exit the context manager."""
+        self._finalize_stream()
+        return False
+
     def _process_chunk(self, chunk: Any) -> None:
         self._chunk_count += 1
         if self._first_token_time is None and hasattr(chunk, 'choices') and chunk.choices:
@@ -59,7 +78,8 @@ class NeatLogsStreamWrapper:
                         for tool_call in choice.delta.tool_calls:
                             idx = tool_call.index
                             if idx not in self._tool_calls:
-                                self._tool_calls[idx] = {"id": "", "type": "function", "function": {"name": "", "arguments": ""}}
+                                self._tool_calls[idx] = {
+                                    "id": "", "type": "function", "function": {"name": "", "arguments": ""}}
                             if tool_call.id:
                                 self._tool_calls[idx]['id'] = tool_call.id
                             if tool_call.function:

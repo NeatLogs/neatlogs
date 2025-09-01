@@ -1,39 +1,62 @@
 """
-Core tracking functionality for NeatLogs Tracker
+Core tracking functionality for Neatlogs Tracker
 """
 
 import time
 import json
-from uuid import uuid4
+import threading
+import logging
 import traceback
+from uuid import uuid4
 from datetime import datetime
 from typing import Dict, List, Optional
 from dataclasses import dataclass, asdict
-import threading
-import logging
 import requests
-from dataclasses import asdict
-import threading
 
-# Thread-local context for agentic framework
-_current_framework_ctx = threading.local()
+import contextvars
+
+# Context variable for agentic framework
+_current_framework_ctx = contextvars.ContextVar(
+    'current_framework', default=None)
+
+# Context variable to suppress low-level patching
+_suppress_patching_ctx = contextvars.ContextVar(
+    'suppress_patching', default=False)
 
 
 def set_current_framework(framework: str):
-    _current_framework_ctx.value = framework
+    """Set the current framework context for the current async task."""
+    _current_framework_ctx.set(framework)
 
 
-def get_current_framework() -> str:
-    return getattr(_current_framework_ctx, "value", None)
+def get_current_framework() -> Optional[str]:
+    """Get the current framework from the current async task."""
+    return _current_framework_ctx.get()
 
 
 def clear_current_framework():
-    if hasattr(_current_framework_ctx, "value"):
-        del _current_framework_ctx.value
+    """Clear the current framework context."""
+    _current_framework_ctx.set(None)
+
+
+def suppress_patching():
+    """Sets a flag to suppress low-level patching for the current async task."""
+    _suppress_patching_ctx.set(True)
+
+
+def release_patching():
+    """Releases the suppression flag for low-level patching."""
+    _suppress_patching_ctx.set(False)
+
+
+def is_patching_suppressed() -> bool:
+    """Checks if low-level patching is currently suppressed."""
+    return _suppress_patching_ctx.get()
 
 
 @dataclass
 class LLMCallData:
+    """Data structure for LLM call information"""
     session_id: str
     agent_id: str
     thread_id: str
@@ -59,6 +82,14 @@ class LLMCallData:
 
 
 class LLMSpan:
+    """
+    Represents a single LLM operation span.
+
+    An LLMSpan tracks a single LLM operation from start to finish, collecting
+    metadata, timing information, and token usage. It serves as the primary
+    data structure for capturing LLM call details.
+    """
+
     def __init__(self, session_id, agent_id, thread_id, api_key, model=None, provider=None, framework=None, tags=None):
         self.span_id = str(uuid4())
         self.trace_id = thread_id
@@ -81,14 +112,12 @@ class LLMSpan:
         self.start_time = None
         self.end_time = None
 
-    def _get_parent_context(self, trace_obj):
-        pass
-
     def start(self, parent_context=None):
-        # Record start time for internal tracking
+        """Start the span timer"""
         self.start_time = time.time()
 
     def end(self, success=True, error=None):
+        """End the span and record results"""
         self.end_time = time.time()
         self.status = "SUCCESS" if success else "FAILURE"
         if error:
@@ -100,7 +129,9 @@ class LLMSpan:
             }
 
     def to_llm_call_data(self) -> LLMCallData:
-        duration = (self.end_time - self.start_time) if self.end_time else 0
+        """Convert span to LLM call data"""
+        duration = (
+            self.end_time - self.start_time) if self.end_time and self.start_time else 0
         return LLMCallData(
             session_id=self.session_id,
             agent_id=self.agent_id,
@@ -116,7 +147,8 @@ class LLMSpan:
             cost=self.cost,
             messages=self.messages,
             completion=self.completion,
-            timestamp=datetime.fromtimestamp(self.start_time).isoformat(),
+            timestamp=datetime.fromtimestamp(
+                self.start_time).isoformat() if self.start_time else datetime.now().isoformat(),
             start_time=self.start_time,
             end_time=self.end_time,
             duration=duration,
@@ -128,6 +160,18 @@ class LLMSpan:
 
 
 class LLMTracker:
+    """
+    Main orchestrator for LLM tracking, logging, and reporting.
+    The LLMTracker manages the lifecycle of LLM operations, from span creation
+    to data collection and reporting. It handles both file-based logging and
+    server-side telemetry transmission.
+    Key Responsibilities:
+    - Managing active spans and completed calls
+    - Coordinating background threads for server communication
+    - Handling graceful shutdown procedures
+    - Providing thread-safe operations for concurrent environments
+    """
+
     def __init__(self, api_key, session_id=None, agent_id=None, thread_id=None, tags=None, enable_server_sending=True):
         self.session_id = session_id or str(uuid4())
         self.agent_id = agent_id or "default-agent"
@@ -137,66 +181,95 @@ class LLMTracker:
         self.enable_server_sending = enable_server_sending
         self._threads = []
 
-        # Initialize framework and provider as None (since framework_detector removed)
-        self.framework = None
-        self.provider = None
-
         self.setup_logging()
         self._lock = threading.Lock()
         self._active_spans = {}
         self._completed_calls = []
-        self._patched_providers = set()
 
         logging.info(f"LLMTracker initialized - Session: {self.session_id}, "
                      f"Agent: {self.agent_id}, Thread: {self.thread_id}")
-        logging.info(f"Framework: {self.framework}, Provider: {self.provider}")
-        if self.tags:
-            logging.info(f"Tags: {self.tags}")
 
-        if self.api_key:
-            logging.info(f"API Key: {self.api_key}")
-        if self.enable_server_sending:
-            logging.info(
-                "Server sending enabled - trace data will be sent to NeatLogs server")
-        logging.info("NeatLogs Tracker: Monitoring enabled.")
+    def _send_data_to_server(self, call_data: LLMCallData):
+        """
+        Send trace data to Neatlogs server in a background thread.
+        This method handles the transmission of collected telemetry data to the
+        Neatlogs backend service. It includes error handling and basic retry logic
+        to ensure data reliability.
+        Args:
+            call_data (LLMCallData): The serialized LLM call data to transmit
+        """
+        def send_in_background():
+            try:
+                url = "http://localhost:3000/api/data/v2"
+                headers = {"Content-Type": "application/json"}
+                trace_data = asdict(call_data)
+                api_data = {
+                    "dataDump": json.dumps(trace_data),
+                    "projectAPIKey": call_data.api_key or self.api_key,
+                    "externalTraceId": call_data.trace_id,
+                    "timestamp": datetime.now().timestamp()
+                }
+                logging.debug(f"Neatlogs: Sending data to server at {url}")
+                response = requests.post(
+                    url, json=api_data, headers=headers, timeout=10.0)
+                response.raise_for_status()
+                logging.debug(
+                    f"Neatlogs: Successfully sent data to server, status: {response.status_code}")
+            except requests.exceptions.RequestException as e:
+                logging.error(f"Error sending data to server: {e}")
+            except Exception as e:
+                logging.error(
+                    f"An unexpected error occurred in send_in_background: {e}")
+
+        thread = threading.Thread(target=send_in_background, daemon=False)
+        thread.start()
+        self._threads.append(thread)
 
     def setup_logging(self):
+        """
+        Setup file-based logging with proper formatting.
+        This method configures a dedicated logger for this tracker instance,
+        ensuring that LLM call data is properly formatted and written to log files.
+        It removes any existing handlers to prevent duplicate logs.
+        """
         self.file_logger = logging.getLogger(f'llm_tracker_{self.session_id}')
         self.file_logger.setLevel(logging.INFO)
         for handler in self.file_logger.handlers[:]:
             self.file_logger.removeHandler(handler)
-
         formatter = logging.Formatter('%(asctime)s - %(message)s')
 
-    def start_llm_span(self, model=None, provider=None, framework=None) -> LLMSpan:
-        # Defensive: always initialize framework to None
-        _framework = framework
-        logging.debug(
-            f"LLMTracker: start_llm_span called with model={model}, provider={provider}, framework={_framework}")
-        if _framework is None:
-            _framework = get_current_framework()
-            logging.debug(
-                f"LLMTracker: got framework from thread-local context: {_framework}")
-        # No fallback to framework_detector anymore
-
-        span = LLMSpan(
-            self.session_id,
-            self.agent_id,
-            self.thread_id,
-            self.api_key,
-            model,
-            provider,
-            _framework,
-            self.tags
-        )
+    def start_llm_span(self, model=None, provider=None, framework=None) -> 'LLMSpan':
+        """
+        Create and start a new LLM span for tracking an operation.
+        This method initializes a new LLMSpan with the provided parameters and
+        starts its timer. The span is registered in the active spans dictionary
+        for later retrieval and completion.
+        Args:
+            model (str, optional): The LLM model name
+            provider (str, optional): The LLM provider name
+            framework (str, optional): The agentic framework being used
+        Returns:
+            LLMSpan: The newly created and started span
+        """
+        _framework = framework if framework is not None else (
+            get_current_framework() or "unknown")
+        span = LLMSpan(self.session_id, self.agent_id, self.thread_id,
+                       self.api_key, model, provider, _framework, self.tags)
         with self._lock:
             self._active_spans[span.span_id] = span
-        logging.debug(
-            f"LLMTracker: Starting span with framework={_framework}, model={model}, provider={provider}")
         span.start()
         return span
 
     def end_llm_span(self, span, success=True, error=None):
+        """
+        Complete an LLM span and log the call data.
+        This method finalizes an LLMSpan, converts it to LLMCallData, and logs
+        the information both to file and potentially to the Neatlogs server.
+        Args:
+            span (LLMSpan): The span to complete
+            success (bool): Whether the operation was successful
+            error (Exception, optional): Error if operation failed
+        """
         span.end(success, error)
         with self._lock:
             if span.span_id in self._active_spans:
@@ -206,104 +279,15 @@ class LLMTracker:
             self.log_llm_call(call_data)
 
     def log_llm_call(self, call_data: LLMCallData):
-        log_entry = {
-            "event_type": "LLM_CALL",
-            "data": asdict(call_data)
-        }
+        log_entry = {"event_type": "LLM_CALL", "data": asdict(call_data)}
         self.file_logger.info(json.dumps(log_entry, indent=2))
-
-        # Send data to server in background if enabled
         if self.enable_server_sending:
+            logging.debug(
+                "Neatlogs: Creating background thread to send call_data to server")
             self._send_data_to_server(call_data)
 
-    def _send_data_to_server(self, call_data: LLMCallData):
-        """Send trace data to NeatLogs server in background thread."""
-        def send_in_background():
-            try:
-                url = "https://app.neatlogs.com/api/data/v2"
-                headers = {"Content-Type": "application/json"}
-
-                # Prepare trace data
-                trace_data = {
-                    "session_id": call_data.session_id,
-                    "agent_id": call_data.agent_id,
-                    "thread_id": call_data.thread_id,
-                    "span_id": call_data.span_id,
-                    "trace_id": call_data.trace_id,
-                    "model": call_data.model,
-                    "provider": call_data.provider,
-                    "framework": call_data.framework,
-                    "prompt_tokens": call_data.prompt_tokens,
-                    "completion_tokens": call_data.completion_tokens,
-                    "total_tokens": call_data.total_tokens,
-                    "cost": call_data.cost,
-                    "messages": call_data.messages,
-                    "completion": call_data.completion,
-                    "timestamp": call_data.timestamp,
-                    "start_time": call_data.start_time,
-                    "end_time": call_data.end_time,
-                    "duration": call_data.duration,
-                    "tags": call_data.tags,
-                    "status": call_data.status,
-                    "api_key": call_data.api_key
-                }
-
-                # Add error information if present
-                if call_data.error_report:
-                    trace_data["error"] = call_data.error_report
-
-                # Prepare API payload
-                api_data = {
-                    "dataDump": json.dumps(trace_data),
-                    "projectAPIKey": call_data.api_key or self.api_key,
-                    "externalTraceId": call_data.trace_id,  # Use trace_id for grouping
-                    "timestamp": datetime.now().timestamp()
-                }
-
-                # Send request
-                response = requests.post(
-                    # url, json=api_data, headers=headers, timeout=10)
-                    url, json=api_data, headers=headers)
-                if response.status_code in (200, 201):
-                    logging.debug(
-                        f"Successfully sent trace data to server: {call_data.trace_id}")
-                else:
-                    logging.warning(
-                        f"Failed to send trace data to server. Status: {response.status_code}")
-
-            except Exception as e:
-                logging.error(f"Error sending trace data to server: {e}")
-
-        # Start background thread
-        thread = threading.Thread(target=send_in_background, daemon=False)
-        thread.start()
-        self._threads.append(thread)
-
-    def get_session_stats(self) -> Dict:
-        with self._lock:
-            total_calls = len(self._completed_calls)
-            successful_calls = sum(
-                1 for call in self._completed_calls if call.status == "SUCCESS")
-            failed_calls = total_calls - successful_calls
-            total_cost = sum(call.cost for call in self._completed_calls)
-            total_tokens = sum(
-                call.total_tokens for call in self._completed_calls)
-            return {
-                "session_id": self.session_id,
-                "total_calls": total_calls,
-                "successful_calls": successful_calls,
-                "failed_calls": failed_calls,
-                "total_cost": total_cost,
-                "total_tokens": total_tokens,
-                "active_spans": len(self._active_spans)
-            }
-
     def add_tags(self, tags: List[str]):
-        """Add tags to the tracker.
-
-        Args:
-            tags: List of tags to add
-        """
+        """Add tags to the tracker."""
         with self._lock:
             for tag in tags:
                 if tag not in self.tags:
@@ -311,20 +295,22 @@ class LLMTracker:
         logging.info(f"Added tags: {tags}")
 
     def shutdown(self):
-        """Wait for all tracking threads to complete."""
+        """Graceful shutdown with proper cleanup"""
+        logging.debug(
+            f"Neatlogs: LLMTracker.shutdown() called. Waiting for {len(self._threads)} sender threads to complete.")
         for thread in self._threads:
-            thread.join()
+            thread.join(timeout=5.0)
+        logging.debug("Neatlogs: LLMTracker.shutdown() finished.")
 
-    def send_existing_logs_to_server(self):
-        """Send all existing completed calls to the server."""
-        if not self.enable_server_sending:
-            logging.warning(
-                "Server sending is disabled. Enable it to send existing logs.")
-            return
+# --- Global Tracker Instance and Initialization ---
 
-        with self._lock:
-            for call_data in self._completed_calls:
-                self._send_data_to_server(call_data)
 
-        logging.info(
-            f"Sent {len(self._completed_calls)} existing log entries to server")
+_global_tracker: Optional[LLMTracker] = None
+_init_lock = threading.Lock()
+
+
+def get_tracker() -> Optional[LLMTracker]:
+    """
+    Get the global tracker instance.
+    """
+    return _global_tracker

@@ -1,5 +1,5 @@
 """
-Event Handlers for NeatLogs Tracker
+Event Handlers for Neatlogs Tracker
 =================================
 
 Provider-specific event handlers for different LLM services.
@@ -16,11 +16,11 @@ from .azure import AzureOpenAIHandler
 
 __all__ = [
     'BaseEventHandler',
-    'GoogleGenAIHandler', 
+    'GoogleGenAIHandler',
     'LiteLLMHandler',
     'OpenAIHandler',
     'AnthropicHandler',
-    'AzureOpenAIHandler'
+    'AzureOpenAIHandler',
 ]
 
 # Provider registry
@@ -37,8 +37,19 @@ PROVIDER_HANDLERS = {
     'azure_openai': AzureOpenAIHandler,
 }
 
+
+def get_langchain_handler(tracker):
+    """Lazily import and return the LangChain handler"""
+    from .langchain import NeatlogsLangchainCallbackHandler as LangChainHandler
+    return LangChainHandler(tracker)
+
+
 def get_handler_for_provider(provider: str, tracker) -> BaseEventHandler:
     """Get the appropriate event handler for a provider"""
+    # Special handling for LangChain to avoid importing it unnecessarily
+    if provider.lower() == 'langchain':
+        return get_langchain_handler(tracker)
+
     handler_class = PROVIDER_HANDLERS.get(provider.lower())
     if handler_class:
         return handler_class(tracker)
