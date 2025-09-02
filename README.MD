@@ -81,10 +81,10 @@ Neatlogs provides a dedicated callback handler for LangChain to enable detailed 
 ```python
 from langchain.chains import LLMChain
 from langchain.llms import OpenAI
-import neatlogs_test
+import neatlogs
 
 # Get the callback handler
-handler = neatlogs_test.get_langchain_callback_handler(api_key="your-api-key")
+handler = neatlogs.get_langchain_callback_handler(api_key="your-api-key")
 
 # Use it with your LangChain components
 llm = OpenAI()
@@ -108,7 +108,7 @@ result = chain.run("Hello world")
 For asynchronous LangChain workflows:
 
 ```python
-from neatlogs_test.integration.callbacks.langchain.callback import AsyncNeatlogsLangchainCallbackHandler
+from neatlogs.integration.callbacks.langchain.callback import AsyncNeatlogsLangchainCallbackHandler
 
 # Use the async handler for async workflows
 async_handler = AsyncNeatlogsLangchainCallbackHandler(api_key="your-api-key")
@@ -126,11 +126,11 @@ CrewAI is a framework for orchestrating role-playing AI agents. Neatlogs provide
 - **Automatic Setup**: No code changes required - just initialize with `neatlogs.init()`
 
 ```python
-import neatlogs_test
+import neatlogs
 from crewai import Agent, Task, Crew
 
 # Initialize Neatlogs (that's all you need!)
-neatlogs_test.init(api_key="your-api-key")
+neatlogs.init(api_key="your-api-key")
 
 # Your CrewAI code works normally and gets tracked automatically
 agent = Agent(role="Researcher", goal="Research AI trends")

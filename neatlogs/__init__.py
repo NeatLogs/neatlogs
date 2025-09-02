@@ -40,8 +40,8 @@ def init(
         LLMTracker: The initialized tracker instance.
 
     Example:
-        >>> import neatlogs_test
-        >>> tracker = neatlogs_test.init(
+        >>> import neatlogs
+        >>> tracker = neatlogs.init(
         ...     api_key="your_api_key",
         ...     tags=["tag1", "tag2"]
         ... )
@@ -108,19 +108,19 @@ def add_tags(tags: List[str]):
         tags (list): List of tags to add
 
     Example:
-        >>> neatlogs_test.add_tags(["production", "customer-support", "v2.1"])
+        >>> neatlogs.add_tags(["production", "customer-support", "v2.1"])
     """
     tracker = get_tracker()
     if not tracker:
         raise RuntimeError(
-            "Tracker not initialized. Call neatlogs_test.init() first.")
+            "Tracker not initialized. Call neatlogs.init() first.")
 
     tracker.add_tags(tags)
 
 
 # --- Automatic Instrumentation Setup ---
 # This is the core of the "magic". The import hook is set up
-# the moment the neatlogs_test library is imported.
+# the moment the neatlogs library is imported.
 setup_import_monitor()
 
 

@@ -144,7 +144,7 @@ def _neatlogs_import_monitor(name, globals=None, locals=None, fromlist=(), level
 def setup_import_monitor():
     """
     Replaces the built-in import function with our monitor. This is called
-    as soon as the neatlogs_test library is imported.
+    as soon as the neatlogs library is imported.
     """
     global _instrumentation_hook_active
     if _instrumentation_hook_active:

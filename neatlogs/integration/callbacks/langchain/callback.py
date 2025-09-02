@@ -61,9 +61,9 @@ def get_model_info(serialized: Dict[str, Any]) -> Dict[str, str]:
                 model_info["model_name"] = params['model_name']
             elif 'deployment_name' in params:
                 model_info["model_name"] = params['deployment_name']
-            elif 'azure_deployment' in params: # older azure versions
+            elif 'azure_deployment' in params:  # older azure versions
                 model_info["model_name"] = params['azure_deployment']
-        
+
         # Fallback for model name from kwargs
         if model_info["model_name"] == "unknown" and 'kwargs' in serialized and isinstance(serialized['kwargs'], dict):
             kwargs = serialized['kwargs']
@@ -155,7 +155,7 @@ class NeatlogsLangchainCallbackHandler(BaseCallbackHandler):
                 "Neatlogs: Created temporary tracker for LangChain callback handler")
         elif not tracker:
             logging.warning(
-                "Neatlogs Tracker not initialized. Please call neatlogs_test.init(api_key=...) to enable automatic patching, "
+                "Neatlogs Tracker not initialized. Please call neatlogs.init(api_key=...) to enable automatic patching, "
                 "or ensure a tracker is already initialized.")
 
         self.tracker = tracker
@@ -387,7 +387,7 @@ class AsyncNeatlogsLangchainCallbackHandler(AsyncCallbackHandler):
                 "Neatlogs: Created temporary tracker for LangChain callback handler")
         elif not tracker:
             logging.warning(
-                "Neatlogs Tracker not initialized. Please call neatlogs_test.init(api_key=...) to enable automatic patching, "
+                "Neatlogs Tracker not initialized. Please call neatlogs.init(api_key=...) to enable automatic patching, "
                 "or ensure a tracker is already initialized.")
 
         self.tracker = tracker
