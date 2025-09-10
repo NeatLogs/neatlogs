@@ -12,7 +12,7 @@ from typing import Any, Callable, Dict, List
 from ..core import LLMSpan, set_current_framework, clear_current_framework
 from .base import BaseEventHandler
 
-# Helper functions to extract data, inspired by agentops
+# Helper functions to extract data
 
 
 def _extract_messages_from_io(data: Any) -> list:
@@ -296,7 +296,7 @@ class LangGraphHandler(BaseEventHandler):
         }
 
     def _detect_llm_node(self, func: Callable, node_name: str) -> bool:
-        """Detect if a node function contains LLM calls using AgentOps-style detection."""
+        """Detect if a node function contains LLM calls detection."""
         try:
             # Get the source code of the function
             source = inspect.getsource(func)
@@ -706,7 +706,6 @@ class LangGraphHandler(BaseEventHandler):
         }
         token = self._graph_execution_context.set(execution_state)
 
-        # Enhanced input extraction to match AgentOps approach
         # Pregel instance is the first arg, input data is usually second
         input_data = args[1] if len(args) > 1 else kwargs.get("input", {})
 
