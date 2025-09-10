@@ -60,6 +60,10 @@ print(f"Total cost: ${stats['total_cost']:.4f}")
 
 Neatlogs provides comprehensive support for various AI frameworks and models:
 
+- [LangChain Integration](#langchain-integration)
+- [CrewAI Integration](#crewai-integration)
+- [LangGraph Integration](#langgraph-integration)
+
 ### LangChain Integration
 Neatlogs provides comprehensive tracking for all LangChain components and workflows:
 
@@ -138,6 +142,30 @@ task = Task(description="Research latest AI developments")
 crew = Crew(agents=[agent], tasks=[task])
 
 result = crew.kickoff()
+```
+
+### LangGraph Integration
+LangGraph is a library for building stateful, multi-actor applications with LLMs, using graphs to define the flow of execution.
+
+Neatlogs provides seamless integration with LangGraph through automatic instrumentation:
+
+- **Graph Execution Tracking**: Monitor graph execution, node transitions, and state changes
+- **Node Monitoring**: Track individual node executions, inputs, outputs, and performance
+- **Edge Tracking**: Capture edge traversals and conditional logic
+- **Automatic Setup**: No code changes required - just initialize with `neatlogs.init()`
+
+```python
+import neatlogs
+from langgraph import StateGraph
+
+# Initialize Neatlogs (that's all you need!)
+neatlogs.init(api_key="your-api-key")
+
+# Your LangGraph code works normally and gets tracked automatically
+graph = StateGraph(...)
+# ... define your graph
+
+result = graph.invoke(...)
 ```
 
 ### Configuration Options
