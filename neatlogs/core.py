@@ -54,6 +54,26 @@ def is_patching_suppressed() -> bool:
     return _suppress_patching_ctx.get()
 
 
+# Context variable for passing LangGraph node spans to provider handlers
+_active_langgraph_node_span_ctx = contextvars.ContextVar(
+    'active_langgraph_node_span', default=None)
+
+
+def set_active_langgraph_node_span(span: 'LLMSpan'):
+    """Set the active LangGraph node span in the current context."""
+    _active_langgraph_node_span_ctx.set(span)
+
+
+def get_active_langgraph_node_span() -> Optional['LLMSpan']:
+    """Get the active LangGraph node span from the current context."""
+    return _active_langgraph_node_span_ctx.get()
+
+
+def clear_active_langgraph_node_span():
+    """Clear the active LangGraph node span from the current context."""
+    _active_langgraph_node_span_ctx.set(None)
+
+
 @dataclass
 class LLMCallData:
     """Data structure for LLM call information"""

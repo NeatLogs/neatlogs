@@ -13,6 +13,7 @@ from .litellm import LiteLLMHandler
 from .openai import OpenAIHandler
 from .anthropic import AnthropicHandler
 from .azure import AzureOpenAIHandler
+from .langgraph import LangGraphHandler
 
 __all__ = [
     'BaseEventHandler',
@@ -21,6 +22,7 @@ __all__ = [
     'OpenAIHandler',
     'AnthropicHandler',
     'AzureOpenAIHandler',
+    'LangGraphHandler',
 ]
 
 # Provider registry
@@ -35,6 +37,7 @@ PROVIDER_HANDLERS = {
     'claude': AnthropicHandler,
     'azure': AzureOpenAIHandler,
     'azure_openai': AzureOpenAIHandler,
+    'langgraph': LangGraphHandler,
 }
 
 

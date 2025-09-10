@@ -19,6 +19,9 @@ class OpenAIHandler(BaseEventHandler):
 
     def extract_request_params(self, *args, **kwargs) -> Dict[str, Any]:
         params = super().extract_request_params(*args, **kwargs)
+        # The 'parse' method has the model in the top-level kwargs
+        if 'model' in kwargs:
+            params['model'] = kwargs['model']
         params.update({
             'tools': kwargs.get('tools'),
             'tool_choice': kwargs.get('tool_choice'),

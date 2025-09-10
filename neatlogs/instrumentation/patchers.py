@@ -62,85 +62,100 @@ class ProviderPatcher:
             logging.error(f"Failed to patch Google GenAI: {e}", exc_info=True)
             return False
 
-    def patch_openai(self):
-        """Patch OpenAI to automatically track calls, including legacy versions."""
+    def _patch_openai_classes(self, provider_name):
+        """A helper to patch the underlying classes for OpenAI and Azure OpenAI."""
         try:
+            # Try the modern approach first - patch client instances
             import openai
 
-            # Check if we've already patched this module
-            if hasattr(openai, '_neatlogs_patched_module'):
+            # Check if we have the modern OpenAI or AzureOpenAI classes
+            client_classes = []
+            if hasattr(openai, 'OpenAI'):
+                client_classes.append(openai.OpenAI)
+            if hasattr(openai, 'AzureOpenAI'):
+                client_classes.append(openai.AzureOpenAI)
+
+            if not client_classes:
+                logging.debug(
+                    f"Neatlogs: No OpenAI client classes found for {provider_name}")
+                return False
+
+            handler = get_handler_for_provider(provider_name, self.tracker)
+            patched_any = False
+
+            # Patch each client class
+            for client_class in client_classes:
+                if hasattr(client_class, '_neatlogs_patched_init'):
+                    continue  # Already patched
+
+                original_init = client_class.__init__
+
+                @wraps(original_init)
+                def patched_init(client_self, *args, **kwargs):
+                    # Call original init first
+                    original_init(client_self, *args, **kwargs)
+
+                    # Now patch the client instance methods
+                    try:
+                        # Patch chat completions create method
+                        if hasattr(client_self, 'chat') and hasattr(client_self.chat, 'completions'):
+                            completions_obj = client_self.chat.completions
+                            if hasattr(completions_obj, 'create') and not hasattr(completions_obj.create, '_neatlogs_patched'):
+                                original_create = completions_obj.create
+                                wrapped_create = handler.wrap_method(
+                                    original_create, provider_name)
+                                completions_obj.create = wrapped_create
+                                setattr(completions_obj.create,
+                                        '_neatlogs_patched', True)
+
+                        # Patch beta chat completions parse method
+                        if (hasattr(client_self, 'beta') and
+                            hasattr(client_self.beta, 'chat') and
+                                hasattr(client_self.beta.chat, 'completions')):
+                            beta_completions_obj = client_self.beta.chat.completions
+                            if hasattr(beta_completions_obj, 'parse') and not hasattr(beta_completions_obj.parse, '_neatlogs_patched'):
+                                original_parse = beta_completions_obj.parse
+                                wrapped_parse = handler.wrap_method(
+                                    original_parse, provider_name)
+                                beta_completions_obj.parse = wrapped_parse
+                                setattr(beta_completions_obj.parse,
+                                        '_neatlogs_patched', True)
+
+                    except Exception as e:
+                        logging.debug(
+                            f"Neatlogs: Error patching {client_class.__name__} instance: {e}")
+
+                # Replace the class __init__ method
+                client_class.__init__ = patched_init
+                client_class._neatlogs_patched_init = True
+                self.original_methods[f'{client_class.__module__}.{client_class.__name__}.__init__'] = original_init
+                patched_any = True
+
+            if patched_any:
+                logging.debug(
+                    f"Neatlogs: Successfully patched OpenAI/Azure client classes for provider '{provider_name}'.")
                 return True
+            else:
+                logging.debug(
+                    f"Neatlogs: No suitable client classes found for patching {provider_name}")
+                return False
 
-            # Mark the module as patched to prevent recursion
-            openai._neatlogs_patched_module = True
-
-            if hasattr(openai, 'OpenAI') and not getattr(openai.OpenAI, '_neatlogs_patched', False):
-                self._patch_client(openai.OpenAI, "openai")
-            if hasattr(openai, 'AsyncOpenAI') and not getattr(openai.AsyncOpenAI, '_neatlogs_patched', False):
-                self._patch_client(openai.AsyncOpenAI, "openai")
-
-            if hasattr(openai, 'ChatCompletion') and not hasattr(openai.ChatCompletion, '_neatlogs_patched'):
-                original_create = openai.ChatCompletion.create
-                if not hasattr(original_create, '_neatlogs_patched'):
-                    handler = get_handler_for_provider("openai", self.tracker)
-                    tracked_create = handler.wrap_method(
-                        original_create, "openai")
-                    setattr(tracked_create, '_neatlogs_patched', True)
-                    openai.ChatCompletion.create = tracked_create
-                    openai.ChatCompletion._neatlogs_patched = True
-                    self.original_methods['openai.ChatCompletion.create'] = original_create
-            return True
-        except ImportError:
+        except ImportError as e:
+            logging.debug(
+                f"Neatlogs: Failed to import OpenAI for patching {provider_name}: {e}")
             return False
         except Exception as e:
-            logging.error(f"Failed to patch OpenAI: {e}")
+            logging.error(
+                f"Failed to patch OpenAI classes for {provider_name}: {e}", exc_info=True)
             return False
+
+    def patch_openai(self):
+        """Patch OpenAI to automatically track calls by modifying the underlying classes."""
+        return self._patch_openai_classes("openai")
 
     def patch_azure_openai(self):
-        """Patch Azure OpenAI to automatically track calls."""
-        try:
-            import openai
-            if hasattr(openai, 'AzureOpenAI'):
-                self._patch_client(openai.AzureOpenAI, "azure")
-            if hasattr(openai, 'AsyncAzureOpenAI'):
-                self._patch_client(openai.AsyncAzureOpenAI, "azure")
-            return True
-        except ImportError:
-            logging.debug("OpenAI library not installed, skipping Azure patch")
-            return False
-        except Exception as e:
-            logging.error(f"Failed to patch Azure OpenAI: {e}")
-            return False
-
-    def _patch_client(self, client_class, provider_name):
-        """A helper function to patch OpenAI-compatible client classes."""
-        if hasattr(client_class, '_neatlogs_patched'):
-            return
-
-        original_init = client_class.__init__
-
-        @wraps(original_init)
-        def tracked_init(client_self, *args, **kwargs):
-            original_init(client_self, *args, **kwargs)
-            if hasattr(client_self.chat, 'completions') and not hasattr(client_self.chat.completions, '_neatlogs_patched'):
-                original_create = client_self.chat.completions.create
-                handler = get_handler_for_provider(provider_name, self.tracker)
-
-                # Check if the original method is async
-                import inspect
-                if inspect.iscoroutinefunction(original_create):
-                    tracked_create_method = handler.wrap_async_method(
-                        original_create, provider_name)
-                else:
-                    tracked_create_method = handler.wrap_method(
-                        original_create, provider_name)
-
-                client_self.chat.completions.create = tracked_create_method
-                client_self.chat.completions._neatlogs_patched = True
-
-        client_class.__init__ = tracked_init
-        client_class._neatlogs_patched = True
-        self.original_methods[f'{provider_name}.{client_class.__name__}.__init__'] = original_init
+        """Patch Azure OpenAI to automatically track calls by modifying the underlying classes."""
+        return self._patch_openai_classes("azure")
 
     def patch_crewai(self):
         """Patch CrewAI to set the framework context before execution."""
@@ -232,4 +247,54 @@ class ProviderPatcher:
             return False
         except Exception as e:
             logging.error(f"Failed to patch Anthropic: {e}")
+            return False
+
+    def patch_langgraph(self):
+        """Patch LangGraph to automatically track workflows and nodes."""
+        try:
+            import langgraph.graph.state
+            import langgraph.pregel
+            import inspect
+
+            handler = get_handler_for_provider("langgraph", self.tracker)
+
+            # --- Patch StateGraph ---
+            graph_cls = langgraph.graph.state.StateGraph
+            if not getattr(graph_cls, '_neatlogs_patched_add_node', False):
+                original_add_node = graph_cls.add_node
+
+                @wraps(original_add_node)
+                def tracked_add_node(graph_self, key, action):
+                    wrapped_action = handler.wrap_node_action(key, action)
+                    return original_add_node(graph_self, key, wrapped_action)
+                graph_cls.add_node = tracked_add_node
+                setattr(graph_cls, '_neatlogs_patched_add_node', True)
+                self.original_methods['langgraph.graph.state.StateGraph.add_node'] = original_add_node
+
+            if not getattr(graph_cls, '_neatlogs_patched_compile', False):
+                original_compile = graph_cls.compile
+                graph_cls.compile = handler.wrap_compile(original_compile)
+                setattr(graph_cls, '_neatlogs_patched_compile', True)
+                self.original_methods['langgraph.graph.state.StateGraph.compile'] = original_compile
+
+            # --- Patch Pregel ---
+            pregel_cls = langgraph.pregel.Pregel
+            methods_to_patch = ["invoke", "ainvoke", "stream", "astream"]
+            for method_name in methods_to_patch:
+                if hasattr(pregel_cls, method_name) and not getattr(getattr(pregel_cls, method_name), '_neatlogs_patched', False):
+                    original_method = getattr(pregel_cls, method_name)
+
+                    wrapped_method = handler.wrap_method(
+                        original_method, method_type=method_name)
+                    setattr(wrapped_method, '_neatlogs_patched', True)
+                    setattr(pregel_cls, method_name, wrapped_method)
+                    self.original_methods[f'langgraph.pregel.Pregel.{method_name}'] = original_method
+
+            logging.debug("Neatlogs: Successfully patched LangGraph")
+            return True
+        except ImportError:
+            logging.debug("Neatlogs: LangGraph not available for patching.")
+            return False
+        except Exception as e:
+            logging.error(f"Failed to patch LangGraph: {e}", exc_info=True)
             return False

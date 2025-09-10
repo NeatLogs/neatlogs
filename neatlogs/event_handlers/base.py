@@ -7,7 +7,7 @@ from various LLM APIs (OpenAI, Anthropic, Google, etc.) and frameworks, and is
 intended to be subclassed for provider-specific logic.
 
 Responsibilities:
-    - Manage LLM span lifecycles (start/end tracking)
+    - Manage LLM span life cycles (start/end tracking)
     - Extract request and response data in a consistent, provider-agnostic way
     - Provide hooks for synchronous and asynchronous API calls, including streaming
 
@@ -111,27 +111,34 @@ class BaseEventHandler(ABC):
             import logging
             logging.warning(f"Failed to extract messages: {e}")
 
+    def enrich_span(self, span: 'LLMSpan', response: Any):
+        """Enriches a span with data from an LLM response, without ending it."""
+        logging.debug(f"Neatlogs: enrich_span called for span {span.span_id}")
+        if not response:
+            return
+        try:
+            response_data = self.extract_response_data(response)
+            logging.debug(
+                f"Neatlogs: Extracted response data: {response_data}")
+
+            # Update span with response data
+            if response_data.get('model'):
+                span.model = response_data.get('model')
+                logging.debug(f"Neatlogs: Set span.model to {span.model}")
+            span.completion = response_data.get('completion', '')
+            span.prompt_tokens = response_data.get('prompt_tokens', 0)
+            span.completion_tokens = response_data.get('completion_tokens', 0)
+            span.total_tokens = response_data.get('total_tokens', 0)
+            span.cost = estimate_cost(
+                span.model, span.prompt_tokens, span.completion_tokens)
+
+        except Exception as e:
+            logging.warning(f"Neatlogs: Failed to enrich span data: {e}")
+
     def handle_call_end(self, span: 'LLMSpan', response: Any, success: bool = True, error: Optional[Exception] = None):
-        """Handle the end of an LLM call"""
+        """Handle the end of an LLM call by enriching and then ending the span."""
         if success and response:
-            try:
-                response_data = self.extract_response_data(response)
-
-                # Update span with response data
-                span.completion = response_data.get('completion', '')
-                span.prompt_tokens = response_data.get('prompt_tokens', 0)
-                span.completion_tokens = response_data.get(
-                    'completion_tokens', 0)
-                span.total_tokens = response_data.get('total_tokens', 0)
-                span.cost = estimate_cost(
-                    span.model, span.prompt_tokens, span.completion_tokens)
-
-            except Exception as e:
-                # Log extraction error but don't fail
-                import logging
-                logging.warning(f"Failed to extract response data: {e}")
-                success = False
-                error = e
+            self.enrich_span(span, response)
 
         # End the span
         self.tracker.end_llm_span(span, success=success, error=error)
@@ -139,10 +146,26 @@ class BaseEventHandler(ABC):
     def wrap_method(self, original_method, provider: str, framework: str = None):
         """Generic method wrapper for non-streaming LLM calls"""
         from functools import wraps
-        from ..core import get_current_framework, is_patching_suppressed
+        from ..core import get_current_framework, is_patching_suppressed, get_active_langgraph_node_span
 
         @wraps(original_method)
         def wrapped(*args, **kwargs):
+            # Priority 1: Check if we are inside a LangGraph node that wants to be enriched.
+            active_node_span = get_active_langgraph_node_span()
+            if active_node_span:
+                try:
+                    response = original_method(*args, **kwargs)
+                    self.enrich_span(active_node_span, response)
+                    return response
+                except Exception as e:
+                    if active_node_span.error_report is None:
+                        active_node_span.error_report = {
+                            "error_type": type(e).__name__,
+                            "error_message": str(e)
+                        }
+                    raise
+
+            # Priority 2: Check if a framework (like LangChain's callback) wants to suppress us completely.
             if is_patching_suppressed():
                 return original_method(*args, **kwargs)
 
@@ -150,17 +173,12 @@ class BaseEventHandler(ABC):
             if kwargs.get('stream', False):
                 return self.wrap_stream_method(original_method, provider)(*args, **kwargs)
 
+            # Priority 3: Default behavior - create a new span for this call.
             model = kwargs.get('model', 'unknown')
-            # Always use a local variable for framework to avoid UnboundLocalError
-            _framework = framework
-            if _framework is None:
-                _framework = get_current_framework()
-
+            _framework = framework or get_current_framework()
             span = self.create_span(
                 model=model, provider=provider, framework=_framework)
-
             self.handle_call_start(span, *args, **kwargs)
-
             try:
                 response = original_method(*args, **kwargs)
                 self.handle_call_end(span, response, success=True)
@@ -174,24 +192,38 @@ class BaseEventHandler(ABC):
     def wrap_async_method(self, original_method, provider: str, framework: str = None):
         """Generic method wrapper for non-streaming async LLM calls"""
         from functools import wraps
-        from ..core import get_current_framework, is_patching_suppressed
+        from ..core import get_current_framework, is_patching_suppressed, get_active_langgraph_node_span
 
         @wraps(original_method)
         async def wrapped(*args, **kwargs):
+            # Priority 1: Check if we are inside a LangGraph node.
+            active_node_span = get_active_langgraph_node_span()
+            if active_node_span:
+                try:
+                    response = await original_method(*args, **kwargs)
+                    self.enrich_span(active_node_span, response)
+                    return response
+                except Exception as e:
+                    if active_node_span.error_report is None:
+                        active_node_span.error_report = {
+                            "error_type": type(e).__name__,
+                            "error_message": str(e)
+                        }
+                    raise
+
+            # Priority 2: Check for general framework suppression.
             if is_patching_suppressed():
                 return await original_method(*args, **kwargs)
 
             if kwargs.get('stream', False):
                 return self.wrap_async_stream_method(original_method, provider)(*args, **kwargs)
 
+            # Priority 3: Default behavior.
             model = kwargs.get('model', 'unknown')
             _framework = framework or get_current_framework()
-
             span = self.create_span(
                 model=model, provider=provider, framework=_framework)
-
             self.handle_call_start(span, *args, **kwargs)
-
             try:
                 response = await original_method(*args, **kwargs)
                 self.handle_call_end(span, response, success=True)

@@ -44,13 +44,19 @@ SUPPORTED_FRAMEWORKS: Dict[str, Dict[str, str]] = {
         "patcher": "patch_crewai",
         "instrumentation_type": "wrapper",
     },
+    "langgraph": {
+        "patcher": "patch_langgraph",
+        "instrumentation_type": "wrapper",
+    },
 }
 
 # Mapping of frameworks to providers they might use internally
 # This helps us determine which providers to suppress when a framework is active
+# NOTE: LangGraph is NOT included here because it uses dual tracking - it needs provider patchers active
 FRAMEWORK_PROVIDER_MAPPING: Dict[str, set] = {
     "langchain": {"openai", "azure_openai", "google.genai", "anthropic"},
     "crewai": {"openai", "azure_openai"},
+    # "langgraph": NOT included - dual tracking requires provider patchers to be active
 }
 
 
@@ -202,6 +208,13 @@ def instrument_all(tracker):
                 f"Error during initial patching of {package_name}: {e}")
         finally:
             _currently_patching.discard(package_name)
+
+    # Also patch langgraph if it's in the supported frameworks
+    if 'langgraph' in SUPPORTED_FRAMEWORKS and 'langgraph' not in _already_patched:
+        patch_method_name = SUPPORTED_FRAMEWORKS['langgraph']['patcher']
+        patch_method = getattr(_patcher_instance, patch_method_name, None)
+        if patch_method and patch_method():
+            _already_patched.add('langgraph')
 
     logging.info("Neatlogs: Instrumentation manager fully activated.")
 
