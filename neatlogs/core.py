@@ -233,8 +233,7 @@ class LLMTracker:
         """
         def send_in_background():
             try:
-                # url = "https://app.neatlogs.com/api/data/v2"
-                url = "http://localhost:3000/api/data/v2"
+                url = "https://app.neatlogs.com/api/data/v2"
                 headers = {"Content-Type": "application/json"}
                 trace_data = asdict(call_data)
                 api_data = {
