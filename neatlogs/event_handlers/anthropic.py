@@ -104,25 +104,29 @@ class AnthropicHandler(BaseEventHandler):
 
     def wrap_stream_method(self, original_method, provider: str):
         from functools import wraps
+        from ..core import current_span_id_context
 
         @wraps(original_method)
         def wrapped(*args, **kwargs):
             model = kwargs.get('model', 'unknown')
             span = self.create_span(
-                model=model, provider=provider, operation="llm_stream")
+                model=model, provider=provider, operation="llm_stream", node_type="llm_call", node_name=model)
 
             self.handle_call_start(span, *args, **kwargs)
 
+            token = current_span_id_context.set(span.span_id)
             try:
                 stream = original_method(*args, **kwargs)
-                return self.handle_stream_response(span, stream)
+                return self.handle_stream_response(span, stream, token)
             except Exception as e:
+                current_span_id_context.reset(token)
                 self.handle_call_end(span, None, success=False, error=e)
                 raise
 
         return wrapped
 
-    def handle_stream_response(self, span: 'LLMSpan', stream: Any):
+    def handle_stream_response(self, span: 'LLMSpan', stream: Any, token: Any):
+        from ..core import current_span_id_context
         # Anthropic streams are context managers
         class TracedStreamManager:
             def __enter__(self):
@@ -130,11 +134,14 @@ class AnthropicHandler(BaseEventHandler):
                 return self.traced_generator(self.original_stream)
 
             def __exit__(self, exc_type, exc_val, exc_tb):
-                final_message = None
-                if hasattr(self.original_stream, 'get_final_message'):
-                    final_message = self.original_stream.get_final_message()
+                try:
+                    final_message = None
+                    if hasattr(self.original_stream, 'get_final_message'):
+                        final_message = self.original_stream.get_final_message()
 
-                self.finalize_stream_span(span, final_message, error=exc_val)
+                    self.finalize_stream_span(span, final_message, error=exc_val)
+                finally:
+                    current_span_id_context.reset(token)
                 return stream.__exit__(exc_type, exc_val, exc_tb)
 
             def traced_generator(self, original_generator):
@@ -146,36 +153,43 @@ class AnthropicHandler(BaseEventHandler):
 
     def wrap_async_stream_method(self, original_method, provider: str):
         from functools import wraps
+        from ..core import current_span_id_context
 
         @wraps(original_method)
         async def wrapped(*args, **kwargs):
             model = kwargs.get('model', 'unknown')
             span = self.create_span(
-                model=model, provider=provider, operation="llm_stream_async")
+                model=model, provider=provider, operation="llm_stream_async", node_type="llm_call", node_name=model)
 
             self.handle_call_start(span, *args, **kwargs)
 
+            token = current_span_id_context.set(span.span_id)
             try:
                 stream = await original_method(*args, **kwargs)
-                return self.handle_async_stream_response(span, stream)
+                return self.handle_async_stream_response(span, stream, token)
             except Exception as e:
+                current_span_id_context.reset(token)
                 self.handle_call_end(span, None, success=False, error=e)
                 raise
 
         return wrapped
 
-    def handle_async_stream_response(self, span: 'LLMSpan', stream: Any):
+    def handle_async_stream_response(self, span: 'LLMSpan', stream: Any, token: Any):
+        from ..core import current_span_id_context
         class TracedAsyncStreamManager:
             async def __aenter__(self):
                 self.original_stream = await stream.__aenter__()
                 return self.traced_async_generator(self.original_stream)
 
             async def __aexit__(self, exc_type, exc_val, exc_tb):
-                final_message = None
-                if hasattr(self.original_stream, 'get_final_message'):
-                    final_message = await self.original_stream.get_final_message()
+                try:
+                    final_message = None
+                    if hasattr(self.original_stream, 'get_final_message'):
+                        final_message = await self.original_stream.get_final_message()
 
-                self.finalize_stream_span(span, final_message, error=exc_val)
+                    self.finalize_stream_span(span, final_message, error=exc_val)
+                finally:
+                    current_span_id_context.reset(token)
                 return await stream.__aexit__(exc_type, exc_val, exc_tb)
 
             async def traced_async_generator(self, original_generator):

@@ -22,10 +22,11 @@ class NeatlogsStreamWrapper:
     completion after the stream ends for comprehensive telemetry.
     """
 
-    def __init__(self, stream: Any, span: LLMSpan, request_kwargs: dict):
+    def __init__(self, stream: Any, span: LLMSpan, request_kwargs: dict, context_token: Any = None):
         self._stream = stream
         self._span = span
         self._request_kwargs = request_kwargs
+        self._context_token = context_token
         self._start_time = time.time()
         self._first_token_time = None
         self._chunk_count = 0
@@ -55,6 +56,7 @@ class NeatlogsStreamWrapper:
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Exit the context manager."""
         self._finalize_stream()
+        # Re-raise any exception that occurred within the stream.
         return False
 
     def _process_chunk(self, chunk: Any) -> None:
@@ -91,6 +93,7 @@ class NeatlogsStreamWrapper:
                     self._finish_reason = choice.finish_reason
 
     def _finalize_stream(self) -> None:
+        from .core import current_span_id_context
         full_content = "".join(self._content_chunks)
         self._span.completion = full_content
         if self._usage:
@@ -98,3 +101,5 @@ class NeatlogsStreamWrapper:
             self._span.completion_tokens = self._usage.completion_tokens
             self._span.total_tokens = self._usage.total_tokens
         self._span.end()
+        if self._context_token:
+            current_span_id_context.reset(self._context_token)

@@ -125,45 +125,6 @@ def should_track_span(operation: str, attributes: Dict[str, Any]) -> bool:
     return True
 
 
-class NeatlogsLangchainCallbackHandler(BaseCallbackHandler):
-    """
-    Synchronous Neatlogs callback handler for LangChain.
-
-    Attach this handler to a LangChain workflow to enable Neatlogs instrumentation
-    of LLM, chain, agent, and tool calls made via *synchronous* APIs (blocking Python).
-
-    Use this handler if your pipeline is synchronous (using methods such as `chain.run()`).
-    Instantiate and pass as a callback:
-        handler = NeatlogsLangchainCallbackHandler(...)
-        chain = LLMChain(..., callbacks=[handler])
-
-    If any part of your workflow is asynchronous (i.e., uses `async def`/`await`),
-    use AsyncNeatlogsLangchainCallbackHandler for those APIs instead.
-    """
-
-    def __init__(self, api_key: Optional[str] = None, tags: Optional[List[str]] = None):
-        from ....core import LLMTracker
-        tracker = get_tracker()
-        # If there's no global tracker, create a temporary one just for this callback handler
-        # This allows the callback handler to work independently without triggering automatic patching
-        if not tracker and api_key:
-            # Create a temporary tracker that sends data to the server
-            # Since there's no global tracker, there's no conflict
-            tracker = LLMTracker(api_key=api_key, tags=tags,
-                                 enable_server_sending=True)
-            logging.info(
-                "Neatlogs: Created temporary tracker for LangChain callback handler")
-        elif not tracker:
-            logging.warning(
-                "Neatlogs Tracker not initialized. Please call neatlogs.init(api_key=...) to enable automatic patching, "
-                "or ensure a tracker is already initialized.")
-
-        self.tracker = tracker
-        self._api_key = api_key
-        self._tags = tags or []
-
-        self.active_spans: Dict[UUID, LLMSpan] = {}
-
     def _start_span(self, run_id: UUID, parent_run_id: Optional[UUID], operation: str, attributes: Dict[str, Any]) -> None:
         if not self.tracker or run_id in self.active_spans:
             if run_id in self.active_spans:
@@ -179,8 +140,25 @@ class NeatlogsLangchainCallbackHandler(BaseCallbackHandler):
         model = attributes.get("model", f"langchain_{operation}")
         provider = attributes.get("provider", "langchain")
 
+        # Determine node_type and node_name
+        if operation == "llm":
+            node_type = "llm_call"
+            node_name = attributes.get("model", "Unknown LLM")
+        elif operation == "tool":
+            node_type = "tool_call"
+            node_name = attributes.get("tool_name", "Unknown Tool")
+        elif operation == "agent_action":
+            node_type = "agent_action"
+            node_name = attributes.get("tool_name", "Unknown Action")
+        elif operation == "chain":
+            node_type = "framework_node"
+            node_name = attributes.get("chain_name", "Unknown Chain")
+        else:
+            node_type = "framework_node"
+            node_name = f"langchain_{operation}"
+
         span = self.tracker.start_llm_span(
-            model=model, provider=provider, framework="langchain")
+            model=model, provider=provider, framework="langchain", node_type=node_type, node_name=node_name)
 
         for key, value in attributes.items():
             setattr(span, key, value)
@@ -188,6 +166,11 @@ class NeatlogsLangchainCallbackHandler(BaseCallbackHandler):
         if parent_run_id and parent_run_id in self.active_spans:
             parent_span = self.active_spans[parent_run_id]
             setattr(span, 'parent_span_id', parent_span.span_id)
+
+        # Manage context for child spans
+        from ....core import current_span_id_context
+        token = current_span_id_context.set(span.span_id)
+        setattr(span, '_context_token', token)
 
         self.active_spans[run_id] = span
 
@@ -197,6 +180,12 @@ class NeatlogsLangchainCallbackHandler(BaseCallbackHandler):
 
         span = self.active_spans.pop(run_id)
         self.tracker.end_llm_span(span, success=success, error=error)
+
+        # Reset context
+        token = getattr(span, '_context_token', None)
+        if token:
+            from ....core import current_span_id_context
+            current_span_id_context.reset(token)
 
     def on_llm_start(self, serialized: Dict[str, Any], prompts: List[str], *, run_id: UUID, parent_run_id: Optional[UUID] = None, **kwargs: Any) -> None:
         suppress_patching()
@@ -411,8 +400,25 @@ class AsyncNeatlogsLangchainCallbackHandler(AsyncCallbackHandler):
         model = attributes.get("model", f"langchain_{operation}")
         provider = attributes.get("provider", "langchain")
 
+        # Determine node_type and node_name
+        if operation == "llm":
+            node_type = "llm_call"
+            node_name = attributes.get("model", "Unknown LLM")
+        elif operation == "tool":
+            node_type = "tool_call"
+            node_name = attributes.get("tool_name", "Unknown Tool")
+        elif operation == "agent_action":
+            node_type = "agent_action"
+            node_name = attributes.get("tool_name", "Unknown Action")
+        elif operation == "chain":
+            node_type = "framework_node"
+            node_name = attributes.get("chain_name", "Unknown Chain")
+        else:
+            node_type = "framework_node"
+            node_name = f"langchain_{operation}"
+
         span = self.tracker.start_llm_span(
-            model=model, provider=provider, framework="langchain")
+            model=model, provider=provider, framework="langchain", node_type=node_type, node_name=node_name)
 
         for key, value in attributes.items():
             setattr(span, key, value)
@@ -420,6 +426,11 @@ class AsyncNeatlogsLangchainCallbackHandler(AsyncCallbackHandler):
         if parent_run_id and parent_run_id in self.active_spans:
             parent_span = self.active_spans[parent_run_id]
             setattr(span, 'parent_span_id', parent_span.span_id)
+
+        # Manage context for child spans
+        from ....core import current_span_id_context
+        token = current_span_id_context.set(span.span_id)
+        setattr(span, '_context_token', token)
 
         self.active_spans[run_id] = span
 
@@ -429,6 +440,12 @@ class AsyncNeatlogsLangchainCallbackHandler(AsyncCallbackHandler):
 
         span = self.active_spans.pop(run_id)
         self.tracker.end_llm_span(span, success=success, error=error)
+
+        # Reset context
+        token = getattr(span, '_context_token', None)
+        if token:
+            from ....core import current_span_id_context
+            current_span_id_context.reset(token)
 
     async def on_llm_start(self, serialized: Dict[str, Any], prompts: List[str], *, run_id: UUID, parent_run_id: Optional[UUID] = None, **kwargs: Any) -> None:
         suppress_patching()

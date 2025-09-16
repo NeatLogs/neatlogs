@@ -130,37 +130,43 @@ class GoogleGenAIHandler(BaseEventHandler):
 
     def wrap_stream_method(self, original_method, provider: str):
         from functools import wraps
+        from ..core import current_span_id_context
 
         @wraps(original_method)
         def wrapped(*args, **kwargs):
             model = kwargs.get('model', 'unknown')
             span = self.create_span(
-                model=model, provider=provider, operation="llm_stream")
+                model=model, provider=provider, operation="llm_stream", node_type="llm_call", node_name=model)
 
             self.handle_call_start(span, *args, **kwargs)
 
+            token = current_span_id_context.set(span.span_id)
             try:
                 stream = original_method(*args, **kwargs)
-                return self.handle_stream_response(span, stream)
+                return self.handle_stream_response(span, stream, token)
             except Exception as e:
+                current_span_id_context.reset(token)
                 self.handle_call_end(span, None, success=False, error=e)
                 raise
 
         return wrapped
 
-    def handle_stream_response(self, span: 'LLMSpan', stream: Any):
+    def handle_stream_response(self, span: 'LLMSpan', stream: Any, token: Any):
+        from ..core import current_span_id_context
         full_completion = ""
         final_response = None
 
-        for chunk in stream:
-            self.process_stream_chunk(span, chunk)
-            if hasattr(chunk, 'text'):
-                full_completion += chunk.text
-            final_response = chunk
-            yield chunk
-
-        span.completion = full_completion
-        self.finalize_stream_span(span, final_response)
+        try:
+            for chunk in stream:
+                self.process_stream_chunk(span, chunk)
+                if hasattr(chunk, 'text'):
+                    full_completion += chunk.text
+                final_response = chunk
+                yield chunk
+        finally:
+            current_span_id_context.reset(token)
+            span.completion = full_completion
+            self.finalize_stream_span(span, final_response)
 
     def process_stream_chunk(self, span: 'LLMSpan', chunk: Any):
 

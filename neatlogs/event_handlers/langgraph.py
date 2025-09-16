@@ -398,7 +398,8 @@ class LangGraphHandler(BaseEventHandler):
             set_active_langgraph_node_span,
             clear_active_langgraph_node_span,
             suppress_patching,
-            release_patching
+            release_patching,
+            current_span_id_context
         )
 
         # Check if we should create a span for this node
@@ -418,6 +419,7 @@ class LangGraphHandler(BaseEventHandler):
             hasattr(original_action, 'tools_by_name') or
             str(type(original_action).__name__) == 'ToolNode'
         )
+        node_type = "tool_call" if is_tool_operation else "framework_node"
 
         # Handle callable objects (like ToolNode) differently from functions
         # ToolNode extends RunnableCallable but doesn't expose __call__ directly
@@ -436,52 +438,41 @@ class LangGraphHandler(BaseEventHandler):
                 @wraps(original_action)
                 async def async_tracked_action(*args, **kwargs):
                     self._track_node_execution(node_name)
-
-                    if should_create_span:
-                        logging.debug(
-                            f"Neatlogs: Creating span for LLM node: {node_name}")
-                        # Make provider more descriptive with node type
-                        provider_name = f"langgraph.node.{node_name}"
-                        span = self.tracker.start_llm_span(
-                            model=f"node/{node_name}", provider=provider_name, framework="langgraph")
-                        setattr(span, 'node_name', node_name)
-                        set_active_langgraph_node_span(span)
-                        release_patching()  # Allow provider patchers to run
-                    else:
-                        logging.debug(
-                            f"Neatlogs: Skipping span for non-LLM node: {node_name}")
-                        span = None
-
+                    span = None
+                    token = None
                     try:
-                        # Get the input messages directly from the node's arguments.
-                        input_state_messages = self.extract_messages(*args, **kwargs)
+                        if should_create_span:
+                            logging.debug(
+                                f"Neatlogs: Creating span for LLM node: {node_name}")
+                            provider_name = f"langgraph.node.{node_name}"
+                            span = self.tracker.start_llm_span(
+                                model=f"node/{node_name}", provider=provider_name, framework="langgraph", node_type=node_type, node_name=node_name)
+                            setattr(span, 'node_name', node_name)
+                            set_active_langgraph_node_span(span)
+                            token = current_span_id_context.set(span.span_id)
+                            release_patching()  # Allow provider patchers to run
+                        else:
+                            logging.debug(
+                                f"Neatlogs: Skipping span for non-LLM node: {node_name}")
 
+                        input_state_messages = self.extract_messages(*args, **kwargs)
                         result = await original_action(*args, **kwargs)
 
                         if span:
-                            # Get the output messages directly from the node's result.
                             response_data = self.extract_response_data(result)
                             output_state_messages = response_data.get('messages', [])
-
-                            # Find the new messages by diffing.
                             num_input_messages = len(input_state_messages)
                             new_messages = output_state_messages[num_input_messages:]
-
-                            # Find completion from the new messages.
                             new_completion = ""
                             if new_messages:
                                 for msg in reversed(new_messages):
                                     if msg.get('role') not in ['tool'] and msg.get('content'):
                                         new_completion = msg.get('content', '')
                                         break
-                            
                             if not new_completion:
                                 new_completion = response_data.get('completion', str(result))
-
-                            # Set the span fields correctly.
                             span.messages = input_state_messages
                             span.completion = new_completion
-
                             self.tracker.end_llm_span(span, success=True)
                         return result
                     except Exception as e:
@@ -490,59 +481,51 @@ class LangGraphHandler(BaseEventHandler):
                                 span, success=False, error=e)
                         raise
                     finally:
+                        if token:
+                            current_span_id_context.reset(token)
                         if span:
                             suppress_patching()  # Restore suppression
                             clear_active_langgraph_node_span()
                 return async_tracked_action
         else:
+                @wraps(original_action)
                 def sync_tracked_action(*args, **kwargs):
                     self._track_node_execution(node_name)
-
-                    if should_create_span:
-                        logging.debug(
-                            f"Neatlogs: Creating span for LLM node: {node_name}")
-                        # Make provider more descriptive with node type
-                        provider_name = f"langgraph.node.{node_name}"
-                        span = self.tracker.start_llm_span(
-                            model=f"node/{node_name}", provider=provider_name, framework="langgraph")
-                        setattr(span, 'node_name', node_name)
-                        set_active_langgraph_node_span(span)
-                        release_patching()  # Allow provider patchers to run
-                    else:
-                        logging.debug(
-                            f"Neatlogs: Skipping span for non-LLM node: {node_name}")
-                        span = None
-
+                    span = None
+                    token = None
                     try:
-                        # Get the input messages directly from the node's arguments.
-                        input_state_messages = self.extract_messages(*args, **kwargs)
+                        if should_create_span:
+                            logging.debug(
+                                f"Neatlogs: Creating span for LLM node: {node_name}")
+                            provider_name = f"langgraph.node.{node_name}"
+                            span = self.tracker.start_llm_span(
+                                model=f"node/{node_name}", provider=provider_name, framework="langgraph", node_type=node_type, node_name=node_name)
+                            setattr(span, 'node_name', node_name)
+                            set_active_langgraph_node_span(span)
+                            token = current_span_id_context.set(span.span_id)
+                            release_patching()  # Allow provider patchers to run
+                        else:
+                            logging.debug(
+                                f"Neatlogs: Skipping span for non-LLM node: {node_name}")
 
+                        input_state_messages = self.extract_messages(*args, **kwargs)
                         result = original_action(*args, **kwargs)
 
                         if span:
-                            # Get the output messages directly from the node's result.
                             response_data = self.extract_response_data(result)
                             output_state_messages = response_data.get('messages', [])
-
-                            # Find the new messages by diffing.
                             num_input_messages = len(input_state_messages)
                             new_messages = output_state_messages[num_input_messages:]
-
-                            # Find completion from the new messages.
                             new_completion = ""
                             if new_messages:
                                 for msg in reversed(new_messages):
                                     if msg.get('role') not in ['tool'] and msg.get('content'):
                                         new_completion = msg.get('content', '')
                                         break
-                            
                             if not new_completion:
                                 new_completion = response_data.get('completion', str(result))
-
-                            # Set the span fields correctly.
                             span.messages = input_state_messages
                             span.completion = new_completion
-
                             self.tracker.end_llm_span(span, success=True)
                         return result
                     except Exception as e:
@@ -551,6 +534,8 @@ class LangGraphHandler(BaseEventHandler):
                                 span, success=False, error=e)
                         raise
                     finally:
+                        if token:
+                            current_span_id_context.reset(token)
                         if span:
                             suppress_patching()  # Restore suppression
                             clear_active_langgraph_node_span()
@@ -568,13 +553,12 @@ class LangGraphHandler(BaseEventHandler):
 
     def _create_workflow_wrapper(self, original_method: Callable, is_async: bool, is_stream: bool):
         """Factory for creating invoke/stream wrappers."""
+        from ..core import current_span_id_context
 
         async def astream_wrapper_gen(stream_gen, span, token):
             try:
                 async for chunk in stream_gen:
-                    # Only process chunks if span is not dummy
-                    if not (hasattr(span, 'span_id') and span.span_id == 'dummy'):
-                        self._process_chunk(chunk, span)
+                    self._process_chunk(chunk, span)
                     yield chunk
             finally:
                 self._finalize_workflow_span(span)
@@ -583,9 +567,7 @@ class LangGraphHandler(BaseEventHandler):
         def stream_wrapper_gen(stream_gen, span, token):
             try:
                 for chunk in stream_gen:
-                    # Only process chunks if span is not dummy
-                    if not (hasattr(span, 'span_id') and span.span_id == 'dummy'):
-                        self._process_chunk(chunk, span)
+                    self._process_chunk(chunk, span)
                     yield chunk
             finally:
                 self._finalize_workflow_span(span)
@@ -599,39 +581,41 @@ class LangGraphHandler(BaseEventHandler):
                         async for chunk in original_method(*args, **kwargs):
                             yield chunk
                         return
-                    span, token = self._start_workflow_span(
+                    span, graph_token = self._start_workflow_span(
                         is_stream, *args, **kwargs)
+                    span_token = current_span_id_context.set(span.span_id)
                     try:
                         stream_gen = original_method(*args, **kwargs)
-                        async for chunk in astream_wrapper_gen(stream_gen, span, token):
+                        async for chunk in astream_wrapper_gen(stream_gen, span, graph_token):
                             yield chunk
                     except Exception as e:
-                        # Only track errors if span is not dummy
-                        if not (hasattr(span, 'span_id') and span.span_id == 'dummy'):
-                            self.tracker.end_llm_span(
-                                span, success=False, error=e)
-                        self._graph_execution_context.reset(token)
+                        self.tracker.end_llm_span(
+                            span, success=False, error=e)
+                        self._graph_execution_context.reset(graph_token)
                         raise
+                    finally:
+                        current_span_id_context.reset(span_token)
                 return async_stream_wrapper
             else:
                 @wraps(original_method)
                 async def async_wrapper(*args, **kwargs):
                     if self._graph_execution_context.get() is not None:
                         return await original_method(*args, **kwargs)
-                    span, token = self._start_workflow_span(
+                    span, graph_token = self._start_workflow_span(
                         is_stream, *args, **kwargs)
+                    span_token = current_span_id_context.set(span.span_id)
                     try:
                         result = await original_method(*args, **kwargs)
                         self._finalize_workflow_span(span, result)
-                        self._graph_execution_context.reset(token)
+                        self._graph_execution_context.reset(graph_token)
                         return result
                     except Exception as e:
-                        # Only track errors if span is not dummy
-                        if not (hasattr(span, 'span_id') and span.span_id == 'dummy'):
-                            self.tracker.end_llm_span(
-                                span, success=False, error=e)
-                        self._graph_execution_context.reset(token)
+                        self.tracker.end_llm_span(
+                            span, success=False, error=e)
+                        self._graph_execution_context.reset(graph_token)
                         raise
+                    finally:
+                        current_span_id_context.reset(span_token)
                 return async_wrapper
         else:
             if is_stream:
@@ -642,20 +626,21 @@ class LangGraphHandler(BaseEventHandler):
                             yield chunk
                         return
 
-                    span, token = self._start_workflow_span(
+                    span, graph_token = self._start_workflow_span(
                         is_stream, *args, **kwargs)
+                    span_token = current_span_id_context.set(span.span_id)
                     try:
                         stream_gen = original_method(*args, **kwargs)
-                        for chunk in stream_wrapper_gen(stream_gen, span, token):
+                        for chunk in stream_wrapper_gen(stream_gen, span, graph_token):
                             yield chunk
                     except Exception as e:
-                        # Only track errors if span is not dummy
-                        if not (hasattr(span, 'span_id') and span.span_id == 'dummy'):
-                            if hasattr(span, 'end'):
-                                self.tracker.end_llm_span(
-                                    span, success=False, error=e)
-                        self._graph_execution_context.reset(token)
+                        if hasattr(span, 'end'):
+                            self.tracker.end_llm_span(
+                                span, success=False, error=e)
+                        self._graph_execution_context.reset(graph_token)
                         raise
+                    finally:
+                        current_span_id_context.reset(span_token)
                 return sync_stream_wrapper
             else:
                 @wraps(original_method)
@@ -663,42 +648,37 @@ class LangGraphHandler(BaseEventHandler):
                     if self._graph_execution_context.get() is not None:
                         return original_method(*args, **kwargs)
 
-                    span, token = self._start_workflow_span(
+                    span, graph_token = self._start_workflow_span(
                         is_stream, *args, **kwargs)
+                    span_token = current_span_id_context.set(span.span_id)
                     try:
                         result = original_method(*args, **kwargs)
                         self._finalize_workflow_span(span, result)
-                        self._graph_execution_context.reset(token)
+                        self._graph_execution_context.reset(graph_token)
                         return result
                     except Exception as e:
-                        # Only track errors if span is not dummy
-                        if not (hasattr(span, 'span_id') and span.span_id == 'dummy'):
-                            if hasattr(span, 'end'):
-                                self.tracker.end_llm_span(
-                                    span, success=False, error=e)
-                        self._graph_execution_context.reset(token)
+                        if hasattr(span, 'end'):
+                            self.tracker.end_llm_span(
+                                span, success=False, error=e)
+                        self._graph_execution_context.reset(graph_token)
                         raise
+                    finally:
+                        current_span_id_context.reset(span_token)
                 return sync_invoke_wrapper
 
     def _start_workflow_span(self, is_stream: bool, *args, **kwargs) -> tuple[LLMSpan, Any]:
         """Starts a span for a workflow execution."""
         operation = "stream" if is_stream else "invoke"
 
-        # Skip workflow span creation to avoid empty logs
-        # Workflow spans contain 0 tokens/cost and don't provide meaningful LLM tracking value
-        # Instead, we'll only track the actual LLM calls within the nodes
+        # Create a real span for the workflow to act as the root of the graph.
+        span = self.tracker.start_llm_span(
+            model=f"langgraph_workflow:{operation}",
+            provider="langgraph",
+            framework="langgraph",
+            node_type="framework_node",
+            node_name=f"LangGraph Workflow ({operation})"
+        )
 
-        class DummySpan:
-            def __init__(self):
-                self.span_id = 'dummy'
-                self.completion = ''
-                self.messages = []
-
-            def end(self, success=True, error=None):
-                # Do nothing for dummy spans
-                pass
-
-        span = DummySpan()
         execution_state = {
             "executed_nodes": [],
             "final_response": "",
@@ -759,10 +739,6 @@ class LangGraphHandler(BaseEventHandler):
 
     def _finalize_workflow_span(self, span: LLMSpan, result: Any = None):
         """Finalizes the workflow span with collected data."""
-        # Skip if dummy span (used when smart filtering is enabled)
-        if hasattr(span, 'span_id') and span.span_id == 'dummy':
-            return
-
         execution_state = self._graph_execution_context.get()
         if not execution_state:
             self.tracker.end_llm_span(

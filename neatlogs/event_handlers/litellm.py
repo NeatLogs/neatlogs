@@ -97,20 +97,23 @@ class LiteLLMHandler(BaseEventHandler):
     def wrap_stream_method(self, original_method, provider: str):
         """LiteLLM streaming is handled via the stream=True parameter in regular calls"""
         from functools import wraps
+        from ..core import current_span_id_context
 
         @wraps(original_method)
         def wrapped(*args, **kwargs):
             if kwargs.get('stream', False):
                 model = kwargs.get('model', 'unknown')
                 span = self.create_span(
-                    model=model, provider=provider, operation="llm_stream")
+                    model=model, provider=provider, operation="llm_stream", node_type="llm_call", node_name=model)
 
                 self.handle_call_start(span, *args, **kwargs)
 
+                token = current_span_id_context.set(span.span_id)
                 try:
                     stream = original_method(*args, **kwargs)
-                    return self.handle_stream_response(span, stream)
+                    return self.handle_stream_response(span, stream, token)
                 except Exception as e:
+                    current_span_id_context.reset(token)
                     self.handle_call_end(span, None, success=False, error=e)
                     raise
             else:
@@ -119,21 +122,24 @@ class LiteLLMHandler(BaseEventHandler):
 
         return wrapped
 
-    def handle_stream_response(self, span: 'LLMSpan', stream: Any):
+    def handle_stream_response(self, span: 'LLMSpan', stream: Any, token: Any):
+        from ..core import current_span_id_context
         full_completion = ""
         final_chunk = None
 
-        for chunk in stream:
-            self.process_stream_chunk(span, chunk)
-            if hasattr(chunk, 'choices') and chunk.choices:
-                delta = chunk.choices[0].delta
-                if hasattr(delta, 'content') and delta.content:
-                    full_completion += delta.content
-            final_chunk = chunk
-            yield chunk
-
-        span.completion = full_completion
-        self.finalize_stream_span(span, final_chunk)
+        try:
+            for chunk in stream:
+                self.process_stream_chunk(span, chunk)
+                if hasattr(chunk, 'choices') and chunk.choices:
+                    delta = chunk.choices[0].delta
+                    if hasattr(delta, 'content') and delta.content:
+                        full_completion += delta.content
+                final_chunk = chunk
+                yield chunk
+        finally:
+            current_span_id_context.reset(token)
+            span.completion = full_completion
+            self.finalize_stream_span(span, final_chunk)
 
     def process_stream_chunk(self, span: 'LLMSpan', chunk: Any):
 

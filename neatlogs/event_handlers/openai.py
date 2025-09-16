@@ -100,20 +100,23 @@ class OpenAIHandler(BaseEventHandler):
 
     def wrap_stream_method(self, original_method, provider: str):
         from functools import wraps
+        from ..core import current_span_id_context
 
         @wraps(original_method)
         def wrapped(*args, **kwargs):
             model = kwargs.get('model', 'unknown')
             span = self.create_span(
-                model=model, provider=provider, operation="llm_stream")
+                model=model, provider=provider, operation="llm_stream", node_type="llm_call", node_name=model)
 
             self.handle_call_start(span, *args, **kwargs)
 
+            token = current_span_id_context.set(span.span_id)
             try:
                 stream = original_method(*args, **kwargs)
                 # Use NeatlogsStreamWrapper for proper telemetry collection
-                return NeatlogsStreamWrapper(stream, span, kwargs)
+                return NeatlogsStreamWrapper(stream, span, kwargs, context_token=token)
             except Exception as e:
+                current_span_id_context.reset(token)
                 self.handle_call_end(span, None, success=False, error=e)
                 raise
 
@@ -121,20 +124,23 @@ class OpenAIHandler(BaseEventHandler):
 
     def wrap_async_stream_method(self, original_method, provider: str):
         from functools import wraps
+        from ..core import current_span_id_context
 
         @wraps(original_method)
         async def wrapped(*args, **kwargs):
             model = kwargs.get('model', 'unknown')
             span = self.create_span(
-                model=model, provider=provider, operation="llm_stream_async")
+                model=model, provider=provider, operation="llm_stream_async", node_type="llm_call", node_name=model)
 
             self.handle_call_start(span, *args, **kwargs)
 
+            token = current_span_id_context.set(span.span_id)
             try:
                 stream = await original_method(*args, **kwargs)
                 # Use NeatlogsStreamWrapper for proper telemetry collection
-                return NeatlogsStreamWrapper(stream, span, kwargs)
+                return NeatlogsStreamWrapper(stream, span, kwargs, context_token=token)
             except Exception as e:
+                current_span_id_context.reset(token)
                 self.handle_call_end(span, None, success=False, error=e)
                 raise
 

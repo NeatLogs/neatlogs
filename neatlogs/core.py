@@ -19,6 +19,10 @@ import contextvars
 _current_framework_ctx = contextvars.ContextVar(
     'current_framework', default=None)
 
+# Context variable for parent span
+current_span_id_context = contextvars.ContextVar('current_span_id', default=None)
+
+
 # Context variable to suppress low-level patching
 _suppress_patching_ctx = contextvars.ContextVar(
     'suppress_patching', default=False)
@@ -82,6 +86,9 @@ class LLMCallData:
     thread_id: str
     span_id: str
     trace_id: str
+    parent_span_id: Optional[str]
+    node_type: str
+    node_name: str
     model: str
     provider: str
     framework: Optional[str]
@@ -110,8 +117,9 @@ class LLMSpan:
     data structure for capturing LLM call details.
     """
 
-    def __init__(self, session_id, agent_id, thread_id, api_key, model=None, provider=None, framework=None, tags=None):
+    def __init__(self, session_id, agent_id, thread_id, api_key, model=None, provider=None, framework=None, tags=None, node_type: str = "llm_call", node_name: str = None):
         self.span_id = str(uuid4())
+        self.parent_span_id = current_span_id_context.get()
         self.trace_id = thread_id
         self.session_id = session_id
         self.agent_id = agent_id
@@ -131,6 +139,8 @@ class LLMSpan:
         self.status = "SUCCESS"
         self.start_time = None
         self.end_time = None
+        self.node_type = node_type
+        self.node_name = node_name or model or "Unknown Node" 
 
     def start(self, parent_context=None):
         """Start the span timer"""
@@ -158,6 +168,9 @@ class LLMSpan:
             thread_id=self.thread_id,
             span_id=self.span_id,
             trace_id=self.trace_id,
+            parent_span_id=self.parent_span_id,
+            node_type=self.node_type,
+            node_name=self.node_name,
             model=self.model or "unknown",
             provider=self.provider or "unknown",
             framework=self.framework,
@@ -220,7 +233,8 @@ class LLMTracker:
         """
         def send_in_background():
             try:
-                url = "https://app.neatlogs.com/api/data/v2"
+                # url = "https://app.neatlogs.com/api/data/v2"
+                url = "http://localhost:3000/api/data/v2"
                 headers = {"Content-Type": "application/json"}
                 trace_data = asdict(call_data)
                 api_data = {
@@ -258,7 +272,7 @@ class LLMTracker:
             self.file_logger.removeHandler(handler)
         formatter = logging.Formatter('%(asctime)s - %(message)s')
 
-    def start_llm_span(self, model=None, provider=None, framework=None) -> 'LLMSpan':
+    def start_llm_span(self, model=None, provider=None, framework=None, node_type: str = "llm_call", node_name: str = None) -> 'LLMSpan':
         """
         Create and start a new LLM span for tracking an operation.
         This method initializes a new LLMSpan with the provided parameters and
@@ -268,13 +282,15 @@ class LLMTracker:
             model (str, optional): The LLM model name
             provider (str, optional): The LLM provider name
             framework (str, optional): The agentic framework being used
+            node_type (str, optional): The type of node being tracked.
+            node_name (str, optional): A human-readable name for the node.
         Returns:
             LLMSpan: The newly created and started span
         """
         _framework = framework if framework is not None else (
-            get_current_framework() or "unknown")
+            get_current_framework() or None)
         span = LLMSpan(self.session_id, self.agent_id, self.thread_id,
-                       self.api_key, model, provider, _framework, self.tags)
+                       self.api_key, model, provider, _framework, self.tags, node_type=node_type, node_name=node_name)
         with self._lock:
             self._active_spans[span.span_id] = span
         span.start()

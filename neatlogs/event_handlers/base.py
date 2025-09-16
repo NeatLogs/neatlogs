@@ -36,7 +36,7 @@ class BaseEventHandler(ABC):
     def __init__(self, tracker):
         self.tracker = tracker
 
-    def create_span(self, model: str, provider: str, framework: str = None, operation: str = "llm_call") -> 'LLMSpan':
+    def create_span(self, model: str, provider: str, framework: str = None, operation: str = "llm_call", node_type: str = "llm_call", node_name: str = None) -> 'LLMSpan':
         """
         Create a new LLMSpan object pre-filled with standard metadata for Neatlogs.
 
@@ -45,37 +45,22 @@ class BaseEventHandler(ABC):
             provider (str): Provider name (e.g., "openai", "anthropic").
             framework (str, optional): Active agentic framework, if applicable.
             operation (str): The telemetry operation type. Defaults to "llm_call".
+            node_type (str): The type of node for graph visualization.
+            node_name (str): The human-readable name for the node.
 
         Returns:
             LLMSpan: New span instance with common attributes set for tracking.
 
         Note:
-            This method initializes, but does not finish, the span.
+            This method initializes and registers the span with the tracker.
         """
-        from ..core import LLMSpan  # Import here to avoid circular dependency
-
-        span = LLMSpan(
-            session_id=self.tracker.session_id,
-            agent_id=self.tracker.agent_id,
-            thread_id=self.tracker.thread_id,
-            api_key=self.tracker.api_key,
+        span = self.tracker.start_llm_span(
             model=model,
             provider=provider,
             framework=framework,
-            tags=self.tracker.tags
+            node_type=node_type,
+            node_name=node_name or model
         )
-
-        # Set common attributes using semantic conventions (future: extend span attributes)
-        common_attrs = get_common_span_attributes(
-            session_id=self.tracker.session_id,
-            agent_id=self.tracker.agent_id,
-            thread_id=self.tracker.thread_id,
-            model=model,
-            provider=provider
-        )
-
-        span.start()
-
         return span
 
     def extract_request_params(self, *args, **kwargs) -> Dict[str, Any]:
@@ -146,7 +131,7 @@ class BaseEventHandler(ABC):
     def wrap_method(self, original_method, provider: str, framework: str = None):
         """Generic method wrapper for non-streaming LLM calls"""
         from functools import wraps
-        from ..core import get_current_framework, is_patching_suppressed, get_active_langgraph_node_span
+        from ..core import get_current_framework, is_patching_suppressed, get_active_langgraph_node_span, current_span_id_context
 
         @wraps(original_method)
         def wrapped(*args, **kwargs):
@@ -177,7 +162,9 @@ class BaseEventHandler(ABC):
             model = kwargs.get('model', 'unknown')
             _framework = framework or get_current_framework()
             span = self.create_span(
-                model=model, provider=provider, framework=_framework)
+                model=model, provider=provider, framework=_framework, node_type="llm_call", node_name=model)
+
+            token = current_span_id_context.set(span.span_id)
             self.handle_call_start(span, *args, **kwargs)
             try:
                 response = original_method(*args, **kwargs)
@@ -186,13 +173,15 @@ class BaseEventHandler(ABC):
             except Exception as e:
                 self.handle_call_end(span, None, success=False, error=e)
                 raise
+            finally:
+                current_span_id_context.reset(token)
 
         return wrapped
 
     def wrap_async_method(self, original_method, provider: str, framework: str = None):
         """Generic method wrapper for non-streaming async LLM calls"""
         from functools import wraps
-        from ..core import get_current_framework, is_patching_suppressed, get_active_langgraph_node_span
+        from ..core import get_current_framework, is_patching_suppressed, get_active_langgraph_node_span, current_span_id_context
 
         @wraps(original_method)
         async def wrapped(*args, **kwargs):
@@ -222,7 +211,9 @@ class BaseEventHandler(ABC):
             model = kwargs.get('model', 'unknown')
             _framework = framework or get_current_framework()
             span = self.create_span(
-                model=model, provider=provider, framework=_framework)
+                model=model, provider=provider, framework=_framework, node_type="llm_call", node_name=model)
+
+            token = current_span_id_context.set(span.span_id)
             self.handle_call_start(span, *args, **kwargs)
             try:
                 response = await original_method(*args, **kwargs)
@@ -231,6 +222,8 @@ class BaseEventHandler(ABC):
             except Exception as e:
                 self.handle_call_end(span, None, success=False, error=e)
                 raise
+            finally:
+                current_span_id_context.reset(token)
 
         return wrapped
     # --- Streaming Placeholders ---
