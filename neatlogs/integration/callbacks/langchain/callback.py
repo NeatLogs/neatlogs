@@ -125,6 +125,45 @@ def should_track_span(operation: str, attributes: Dict[str, Any]) -> bool:
     return True
 
 
+class NeatlogsLangchainCallbackHandler(BaseCallbackHandler):
+    """
+    Synchronous Neatlogs callback handler for LangChain.
+
+    Attach this handler to a LangChain workflow to enable Neatlogs instrumentation
+    of LLM, chain, agent, and tool calls made via *synchronous* APIs (blocking Python).
+
+    Use this handler if your pipeline is synchronous (using methods such as `chain.run()`).
+    Instantiate and pass as a callback:
+        handler = NeatlogsLangchainCallbackHandler(...)
+        chain = LLMChain(..., callbacks=[handler])
+
+    If any part of your workflow is asynchronous (i.e., uses `async def`/`await`),
+    use AsyncNeatlogsLangchainCallbackHandler for those APIs instead.
+    """
+
+    def __init__(self, api_key: Optional[str] = None, tags: Optional[List[str]] = None):
+        from ....core import LLMTracker
+        tracker = get_tracker()
+        # If there's no global tracker, create a temporary one just for this callback handler
+        # This allows the callback handler to work independently without triggering automatic patching
+        if not tracker and api_key:
+            # Create a temporary tracker that sends data to the server
+            # Since there's no global tracker, there's no conflict
+            tracker = LLMTracker(api_key=api_key, tags=tags,
+                                 enable_server_sending=True)
+            logging.info(
+                "Neatlogs: Created temporary tracker for LangChain callback handler")
+        elif not tracker:
+            logging.warning(
+                "Neatlogs Tracker not initialized. Please call neatlogs.init(api_key=...) to enable automatic patching, "
+                "or ensure a tracker is already initialized.")
+
+        self.tracker = tracker
+        self._api_key = api_key
+        self._tags = tags or []
+
+        self.active_spans: Dict[UUID, LLMSpan] = {}
+
     def _start_span(self, run_id: UUID, parent_run_id: Optional[UUID], operation: str, attributes: Dict[str, Any]) -> None:
         if not self.tracker or run_id in self.active_spans:
             if run_id in self.active_spans:
