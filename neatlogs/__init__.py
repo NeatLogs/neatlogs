@@ -119,8 +119,7 @@ def add_tags(tags: List[str]):
 
 
 # --- Automatic Instrumentation Setup ---
-# This is the core of the "magic". The import hook is set up
-# the moment the neatlogs library is imported.
+# This is the core of the "magic". The import hook is set up the moment the neatlogs library is imported.
 setup_import_monitor()
 
 

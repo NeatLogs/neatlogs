@@ -22,6 +22,7 @@ wheels/
 
 # Virtual Environment
 venv/
+.venv/
 env/
 ENV/
 
@@ -37,4 +38,6 @@ Thumbs.db
 
 # Project specific
 *.log
-.env 
+.env
+.venv/
+docs

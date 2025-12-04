@@ -101,6 +101,7 @@ def _neatlogs_import_monitor(name, globals=None, locals=None, fromlist=(), level
     global _currently_patching, _already_patched
     if name in _currently_patching or name in _already_patched:
         return module
+    
 
     # Phase 1: Framework detection
     global _detected_frameworks
