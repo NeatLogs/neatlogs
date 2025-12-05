@@ -1,6 +1,0 @@
-requests
-opentelemetry-api
-opentelemetry-sdk
-opentelemetry-exporter-otlp
-openinference-semantic-conventions
-openinference-instrumentation
