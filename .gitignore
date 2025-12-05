@@ -39,5 +39,5 @@ Thumbs.db
 # Project specific
 *.log
 .env
-.venv/
+.venv
 docs

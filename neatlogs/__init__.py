@@ -2,16 +2,15 @@
 Neatlogs - LLM Call Tracking Library
 ==========================================
 
-A comprehensive LLM tracking system.
+A comprehensive LLM tracking system with OpenTelemetry and OpenInference support.
 Automatically captures and logs all LLM API calls with detailed metrics.
 """
 
 from .core import get_tracker, LLMTracker
-from .instrumentation.manager import setup_import_monitor
 import logging
 import atexit
 import threading
-from typing import List, Optional
+from typing import List, Optional, Dict
 
 __version__ = "1.1.7"
 __all__ = ['init', 'get_tracker', 'add_tags', 'get_langchain_callback_handler']
@@ -25,27 +24,45 @@ _init_lock = threading.Lock()
 def init(
     api_key: str,
     tags: Optional[List[str]] = None,
-    debug: bool = False
+    debug: bool = False,
+    # OpenTelemetry options
+    enable_otel: bool = False,
+    otlp_endpoint: Optional[str] = None,
+    otlp_headers: Optional[Dict[str, str]] = None,
+    otel_console_export: bool = False,
+    dry_run: bool = False,
 ):
     """
-    Initialize the Neatlogs tracking system.
-
+    Initialize the Neatlogs tracking system with optional OpenTelemetry support.
 
     Args:
         api_key (str): API key for the session. Will be persisted and logged.
         tags (List[str], optional): List of tags to associate with the tracking session.
         debug (bool): Enable debug logging. Defaults to False.
+        enable_otel (bool): Enable OpenTelemetry tracing. Defaults to False.
+        otlp_endpoint (str, optional): OTLP HTTP endpoint for exporting traces.
+        otlp_headers (Dict[str, str], optional): Headers for OTLP exporter 
+            (e.g., {"Authorization": "Bearer xxx"}).
+        otel_console_export (bool): Enable console export for debugging OTel spans.
+        dry_run (bool): If True, disables sending data to Neatlogs server and enables console logging.
+                        Useful for local testing and debugging. Defaults to False.
 
     Returns:
         LLMTracker: The initialized tracker instance.
 
     Example:
         >>> import neatlogs
+        >>> # Basic usage
+        >>> tracker = neatlogs.init(api_key="your_api_key")
+
+        >>> # With OpenTelemetry (auto-instrumentation)
         >>> tracker = neatlogs.init(
         ...     api_key="your_api_key",
-        ...     tags=["tag1", "tag2"]
+        ...     enable_otel=True,
         ... )
-        >>> # Now all calls are automatically tracked!
+
+        >>> # Dry run mode (local testing)
+        >>> tracker = neatlogs.init(api_key="test", dry_run=True)
     """
 
     session_id = None
@@ -65,6 +82,12 @@ def init(
                 agent_id=agent_id,
                 thread_id=thread_id,
                 tags=tags,
+                # OpenTelemetry options
+                enable_otel=enable_otel,
+                otlp_endpoint=otlp_endpoint,
+                otlp_headers=otlp_headers,
+                otel_console_export=otel_console_export,
+                dry_run=dry_run,
             )
             from .instrumentation import manager
             manager.instrument_all(_global_tracker)
@@ -76,6 +99,12 @@ def init(
             logging.info(f"   🧵 Thread: {_global_tracker.thread_id}")
             if tags:
                 logging.info(f"   🏷️  Tags: {tags}")
+            if enable_otel or dry_run:
+                logging.info(f"   📡 OpenTelemetry: Enabled")
+                if otlp_endpoint:
+                    logging.info(f"   🔗 OTLP Endpoint: {otlp_endpoint}")
+            if dry_run:
+                logging.info(f"   🧪 Dry Run: Enabled (No data sent to server)")
 
     return _global_tracker
 
@@ -119,8 +148,7 @@ def add_tags(tags: List[str]):
 
 
 # --- Automatic Instrumentation Setup ---
-# This is the core of the "magic". The import hook is set up the moment the neatlogs library is imported.
-setup_import_monitor()
+# This is handled by instrument_all() called in init()
 
 
 def _shutdown_neatlogs():

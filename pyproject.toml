@@ -30,7 +30,36 @@ classifiers = [
     "Topic :: System :: Monitoring",
 ]
 requires-python = ">=3.8"
-dependencies = []
+dependencies = [
+    "openinference-instrumentation>=0.1.27",
+    "openinference-semantic-conventions>=0.1.13",
+    "opentelemetry-api>=1.33.1",
+    "opentelemetry-exporter-otlp-proto-http>=1.33.1",
+    "opentelemetry-sdk>=1.33.1",
+    "requests>=2.31.0",
+]
+[project.optional-dependencies]
+openai = [
+    "openai>=1.0.0",
+    "openinference-instrumentation-openai>=0.1.32",
+]
+langchain = [
+    "langchain>=0.1.0",
+    "openinference-instrumentation-langchain>=0.1.52",
+]
+litellm = [
+    "litellm>=1.0.0",
+    "openinference-instrumentation-litellm>=0.1.6",
+]
+google-genai = [
+    "google-generativeai>=0.3.0",
+    "openinference-instrumentation-google-genai>=0.1.1",
+]
+langgraph = [
+    "langgraph>=0.1.0",
+    "openinference-instrumentation-langgraph>=0.1.0",
+]
+crewai = ["openinference-instrumentation-crewai>=0.1.0"]
 
 [project.urls]
 Homepage = "https://github.com/NeatLogs/neatlogs"

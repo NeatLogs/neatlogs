@@ -8,6 +8,12 @@ This module streamlines semantic data capture and aids future integration.
 """
 
 from typing import Dict, Any
+from openinference.semconv.trace import (
+    SpanAttributes,
+    OpenInferenceSpanKindValues,
+    MessageAttributes as OIMessageAttributes,
+    ToolCallAttributes as OIToolCallAttributes,
+)
 
 # LLM-specific semantic conventions
 
@@ -20,87 +26,71 @@ class LLMAttributes:
     """
 
     # Core LLM attributes
-    LLM_SYSTEM = "llm.system"  # e.g., "openai", "anthropic", "google"
-    LLM_REQUEST_MODEL = "llm.request.model"  # e.g., "gpt-4", "claude-3-sonnet"
-    LLM_REQUEST_TYPE = "llm.request.type"  # "chat", "completion", "embedding"
-    LLM_REQUEST_TEMPERATURE = "llm.request.temperature"
-    LLM_REQUEST_MAX_TOKENS = "llm.request.max_tokens"
-    LLM_REQUEST_TOP_P = "llm.request.top_p"
-    LLM_REQUEST_TOP_K = "llm.request.top_k"
-    LLM_REQUEST_FREQUENCY_PENALTY = "llm.request.frequency_penalty"
-    LLM_REQUEST_PRESENCE_PENALTY = "llm.request.presence_penalty"
-    LLM_REQUEST_STREAMING = "llm.request.streaming"
-    LLM_REQUEST_SEED = "llm.request.seed"
+    LLM_SYSTEM = SpanAttributes.LLM_SYSTEM  # e.g., "openai", "anthropic", "google"
+    # e.g., "gpt-4", "claude-3-sonnet"
+    LLM_REQUEST_MODEL = SpanAttributes.LLM_MODEL_NAME
+    # "chat", "completion", "embedding"
+    LLM_REQUEST_TYPE = SpanAttributes.OPENINFERENCE_SPAN_KIND
+
+    # Request Parameters
+    # We will store params as JSON here
+    LLM_REQUEST_TEMPERATURE = SpanAttributes.LLM_INVOCATION_PARAMETERS
+    # But for individual OTel GenAI attributes we keep these keys available for mapping
+    GEN_AI_REQUEST_TEMPERATURE = "gen_ai.request.temperature"
+    GEN_AI_REQUEST_MAX_TOKENS = "gen_ai.request.max_tokens"
+    GEN_AI_REQUEST_TOP_P = "gen_ai.request.top_p"
+    GEN_AI_REQUEST_TOP_K = "gen_ai.request.top_k"
+    GEN_AI_REQUEST_FREQUENCY_PENALTY = "gen_ai.request.frequency_penalty"
+    GEN_AI_REQUEST_PRESENCE_PENALTY = "gen_ai.request.presence_penalty"
+    GEN_AI_REQUEST_STOP_SEQUENCES = "gen_ai.request.stop_sequences"
 
     # Token usage
-    LLM_USAGE_PROMPT_TOKENS = "llm.usage.prompt_tokens"
-    LLM_USAGE_COMPLETION_TOKENS = "llm.usage.completion_tokens"
-    LLM_USAGE_TOTAL_TOKENS = "llm.usage.total_tokens"
-    LLM_USAGE_STREAMING_TOKENS = "llm.usage.streaming_tokens"
+    LLM_USAGE_PROMPT_TOKENS = SpanAttributes.LLM_TOKEN_COUNT_PROMPT
+    LLM_USAGE_COMPLETION_TOKENS = SpanAttributes.LLM_TOKEN_COUNT_COMPLETION
+    LLM_USAGE_TOTAL_TOKENS = SpanAttributes.LLM_TOKEN_COUNT_TOTAL
+
+    # OTel GenAI Token Usage
+    GEN_AI_USAGE_INPUT_TOKENS = "gen_ai.usage.input_tokens"
+    GEN_AI_USAGE_OUTPUT_TOKENS = "gen_ai.usage.output_tokens"
 
     # Response attributes
-    LLM_RESPONSE_MODEL = "llm.response.model"
-    LLM_RESPONSE_ID = "llm.response.id"
-    LLM_RESPONSE_FINISH_REASON = "llm.response.finish_reason"
-    LLM_RESPONSE_STOP_REASON = "llm.response.stop_reason"
-    LLM_RESPONSE_CHOICES = "llm.response.choices"
+    # In response we confirm the model
+    LLM_RESPONSE_MODEL = SpanAttributes.LLM_MODEL_NAME
+    GEN_AI_RESPONSE_ID = "gen_ai.response.id"
+    GEN_AI_RESPONSE_FINISH_REASONS = "gen_ai.response.finish_reasons"
 
-    # Cost and performance
+    # Cost (OpenInference specific)
     LLM_COST_TOTAL = "llm.cost.total"
     LLM_COST_PROMPT = "llm.cost.prompt"
     LLM_COST_COMPLETION = "llm.cost.completion"
-
-    # Content attributes
-    LLM_PROMPTS = "llm.prompts"  # JSON array of prompt messages
-    LLM_COMPLETIONS = "llm.completions"  # JSON array of completion messages
-    LLM_CONTENT_COMPLETION_CHUNK = "llm.content.completion.chunk"
 
     # Agent-specific attributes
     AGENT_ID = "agent.id"
     AGENT_SESSION_ID = "agent.session.id"
     AGENT_THREAD_ID = "agent.thread.id"
-    AGENT_OPERATION = "agent.operation"
 
     # Error attributes
     ERROR_TYPE = "error.type"
     ERROR_MESSAGE = "error.message"
     ERROR_STACK_TRACE = "error.stack_trace"
 
-    # Tool attributes
-    LLM_TOOLS = "llm.tools"  # JSON array of available tools
-    LLM_TOOL_CALLS = "llm.tool_calls"  # JSON array of tool calls made
-
-    # Safety attributes
-    LLM_SAFETY_RATINGS = "llm.safety.ratings"
-    LLM_SAFETY_BLOCKED = "llm.safety.blocked"
-
 
 class MessageAttributes:
     """Structured message attributes for detailed tracking.
 
-    Specifies schema for indexed prompt and completion messages, including tool calls,
-    useful for transforming LLM interaction history into semantic logs/attributes.
+    Uses OpenInference MessageAttributes where possible.
     """
+    # We use the OpenInference convention: llm.input_messages.{i}.message.role
+    # These are helper constants for the structure
+    MESSAGE_ROLE = OIMessageAttributes.MESSAGE_ROLE
+    MESSAGE_CONTENT = OIMessageAttributes.MESSAGE_CONTENT
+    MESSAGE_TOOL_CALLS = OIMessageAttributes.MESSAGE_TOOL_CALLS
+    MESSAGE_FUNCTION_NAME = OIMessageAttributes.MESSAGE_FUNCTION_CALL_NAME
+    MESSAGE_FUNCTION_ARGUMENTS = OIMessageAttributes.MESSAGE_FUNCTION_CALL_ARGUMENTS_JSON
 
-    # Prompt attributes (indexed)
-    PROMPT_ROLE = "llm.prompt.{i}.role"
-    PROMPT_CONTENT = "llm.prompt.{i}.content"
-    PROMPT_TYPE = "llm.prompt.{i}.type"
-    PROMPT_TOOL_CALLS = "llm.prompt.{i}.tool_calls"
-
-    # Completion attributes (indexed)
-    COMPLETION_ID = "llm.completion.{i}.id"
-    COMPLETION_ROLE = "llm.completion.{i}.role"
-    COMPLETION_CONTENT = "llm.completion.{i}.content"
-    COMPLETION_TYPE = "llm.completion.{i}.type"
-    COMPLETION_FINISH_REASON = "llm.completion.{i}.finish_reason"
-    COMPLETION_TOOL_CALLS = "llm.completion.{i}.tool_calls"
-
-    # Tool call attributes (doubly indexed)
-    COMPLETION_TOOL_CALL_ID = "llm.completion.{i}.tool_call.{j}.id"
-    COMPLETION_TOOL_CALL_NAME = "llm.completion.{i}.tool_call.{j}.name"
-    COMPLETION_TOOL_CALL_TYPE = "llm.completion.{i}.tool_call.{j}.type"
-    COMPLETION_TOOL_CALL_ARGUMENTS = "llm.completion.{i}.tool_call.{j}.arguments"
+    TOOL_CALL_ID = OIToolCallAttributes.TOOL_CALL_ID
+    TOOL_CALL_FUNCTION_NAME = OIToolCallAttributes.TOOL_CALL_FUNCTION_NAME
+    TOOL_CALL_FUNCTION_ARGUMENTS_JSON = OIToolCallAttributes.TOOL_CALL_FUNCTION_ARGUMENTS_JSON
 
 
 class LLMRequestTypeValues:
@@ -111,28 +101,9 @@ class LLMRequestTypeValues:
     CHAT = "chat"
     COMPLETION = "completion"
     EMBEDDING = "embedding"
-    IMAGE_GENERATION = "image_generation"
-    AUDIO_TRANSCRIPTION = "audio_transcription"
-    AUDIO_TRANSLATION = "audio_translation"
-
-
-class CoreAttributes:
-    """Core system attributes.
-
-    Provides attribute names used for system- and error-level reporting.
-    """
-    ERROR_MESSAGE = "error.message"
-    ERROR_TYPE = "error.type"
-    ERROR_STACK_TRACE = "error.stack_trace"
-
-
-class InstrumentationAttributes:
-    """Instrumentation metadata attributes.
-
-    Used for capturing metadata about the underlying instrumentation library/version.
-    """
-    LIBRARY_NAME = "instrumentation.library.name"
-    LIBRARY_VERSION = "instrumentation.library.version"
+    TOOL = "tool"
+    CHAIN = "chain"
+    AGENT = "agent"
 
 
 class LLMEvents:
@@ -169,17 +140,14 @@ def get_provider_system_name(provider: str) -> str:
     provider_mapping = {
         "openai": "openai",
         "anthropic": "anthropic",
-        "google": "google_genai",
-        "google_genai": "google_genai",
-        "gemini": "google_genai",
+        "google": "gemini",
+        "google_genai": "gemini",
+        "gemini": "gemini",
         "azure": "azure_openai",
         "azure_openai": "azure_openai",
         "litellm": "litellm",
-        # "cohere": "cohere",
-        # "huggingface": "huggingface",
-        # "ollama": "ollama",
-        # "claude": "anthropic",
-        # "gpt": "openai",
+        "mistral": "mistral",
+        "cohere": "cohere",
     }
     return provider_mapping.get(provider.lower(), provider.lower())
 
