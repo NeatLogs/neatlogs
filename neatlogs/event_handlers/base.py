@@ -18,7 +18,6 @@ from abc import ABC, abstractmethod
 from typing import Dict, List, Any, Optional
 import logging
 
-from ..semconv import get_common_span_attributes
 from ..token_counting import estimate_cost
 
 
@@ -36,7 +35,15 @@ class BaseEventHandler(ABC):
     def __init__(self, tracker):
         self.tracker = tracker
 
-    def create_span(self, model: str, provider: str, framework: str = None, operation: str = "llm_call", node_type: str = "llm_call", node_name: str = None) -> 'LLMSpan':
+    def create_span(
+        self,
+        model: str,
+        provider: str,
+        framework: str = None,
+        operation: str = "llm_call",
+        node_type: str = "llm_call",
+        node_name: str = None,
+    ) -> "LLMSpan":
         """
         Create a new LLMSpan object pre-filled with standard metadata for Neatlogs.
 
@@ -59,17 +66,17 @@ class BaseEventHandler(ABC):
             provider=provider,
             framework=framework,
             node_type=node_type,
-            node_name=node_name or model
+            node_name=node_name or model,
         )
         return span
 
     def extract_request_params(self, *args, **kwargs) -> Dict[str, Any]:
         """Extract request parameters from function arguments"""
         return {
-            'temperature': kwargs.get('temperature'),
-            'max_tokens': kwargs.get('max_tokens'),
-            'top_p': kwargs.get('top_p'),
-            'model': kwargs.get('model', 'unknown'),
+            "temperature": kwargs.get("temperature"),
+            "max_tokens": kwargs.get("max_tokens"),
+            "top_p": kwargs.get("top_p"),
+            "model": kwargs.get("model", "unknown"),
         }
 
     @abstractmethod
@@ -82,7 +89,7 @@ class BaseEventHandler(ABC):
         """Extract data from response object - must be implemented by subclasses"""
         pass
 
-    def handle_call_start(self, span: 'LLMSpan', *args, **kwargs):
+    def handle_call_start(self, span: "LLMSpan", *args, **kwargs):
         """Handle the start of an LLM call"""
         # Extract and set request parameters
         request_params = self.extract_request_params(*args, **kwargs)
@@ -94,33 +101,40 @@ class BaseEventHandler(ABC):
         except Exception as e:
             # Log but don't fail the entire operation
             import logging
+
             logging.warning(f"Failed to extract messages: {e}")
 
-    def enrich_span(self, span: 'LLMSpan', response: Any):
+    def enrich_span(self, span: "LLMSpan", response: Any):
         """Enriches a span with data from an LLM response, without ending it."""
         logging.debug(f"Neatlogs: enrich_span called for span {span.span_id}")
         if not response:
             return
         try:
             response_data = self.extract_response_data(response)
-            logging.debug(
-                f"Neatlogs: Extracted response data: {response_data}")
+            logging.debug(f"Neatlogs: Extracted response data: {response_data}")
 
             # Update span with response data
-            if response_data.get('model'):
-                span.model = response_data.get('model')
+            if response_data.get("model"):
+                span.model = response_data.get("model")
                 logging.debug(f"Neatlogs: Set span.model to {span.model}")
-            span.completion = response_data.get('completion', '')
-            span.prompt_tokens = response_data.get('prompt_tokens', 0)
-            span.completion_tokens = response_data.get('completion_tokens', 0)
-            span.total_tokens = response_data.get('total_tokens', 0)
+            span.completion = response_data.get("completion", "")
+            span.prompt_tokens = response_data.get("prompt_tokens", 0)
+            span.completion_tokens = response_data.get("completion_tokens", 0)
+            span.total_tokens = response_data.get("total_tokens", 0)
             span.cost = estimate_cost(
-                span.model, span.prompt_tokens, span.completion_tokens)
+                span.model, span.prompt_tokens, span.completion_tokens
+            )
 
         except Exception as e:
             logging.warning(f"Neatlogs: Failed to enrich span data: {e}")
 
-    def handle_call_end(self, span: 'LLMSpan', response: Any, success: bool = True, error: Optional[Exception] = None):
+    def handle_call_end(
+        self,
+        span: "LLMSpan",
+        response: Any,
+        success: bool = True,
+        error: Optional[Exception] = None,
+    ):
         """Handle the end of an LLM call by enriching and then ending the span."""
         if success and response:
             self.enrich_span(span, response)
@@ -131,7 +145,12 @@ class BaseEventHandler(ABC):
     def wrap_method(self, original_method, provider: str, framework: str = None):
         """Generic method wrapper for non-streaming LLM calls"""
         from functools import wraps
-        from ..core import get_current_framework, is_patching_suppressed, get_active_langgraph_node_span, current_span_id_context
+        from ..core import (
+            get_current_framework,
+            is_patching_suppressed,
+            get_active_langgraph_node_span,
+            current_span_id_context,
+        )
 
         @wraps(original_method)
         def wrapped(*args, **kwargs):
@@ -146,7 +165,7 @@ class BaseEventHandler(ABC):
                     if active_node_span.error_report is None:
                         active_node_span.error_report = {
                             "error_type": type(e).__name__,
-                            "error_message": str(e)
+                            "error_message": str(e),
                         }
                     raise
 
@@ -155,14 +174,21 @@ class BaseEventHandler(ABC):
                 return original_method(*args, **kwargs)
 
             # For LiteLLM, stream may be a kwarg in the main method
-            if kwargs.get('stream', False):
-                return self.wrap_stream_method(original_method, provider)(*args, **kwargs)
+            if kwargs.get("stream", False):
+                return self.wrap_stream_method(original_method, provider)(
+                    *args, **kwargs
+                )
 
             # Priority 3: Default behavior - create a new span for this call.
-            model = kwargs.get('model', 'unknown')
+            model = kwargs.get("model", "unknown")
             _framework = framework or get_current_framework()
             span = self.create_span(
-                model=model, provider=provider, framework=_framework, node_type="llm_call", node_name=model)
+                model=model,
+                provider=provider,
+                framework=_framework,
+                node_type="llm_call",
+                node_name=model,
+            )
 
             token = current_span_id_context.set(span.span_id)
             self.handle_call_start(span, *args, **kwargs)
@@ -181,7 +207,12 @@ class BaseEventHandler(ABC):
     def wrap_async_method(self, original_method, provider: str, framework: str = None):
         """Generic method wrapper for non-streaming async LLM calls"""
         from functools import wraps
-        from ..core import get_current_framework, is_patching_suppressed, get_active_langgraph_node_span, current_span_id_context
+        from ..core import (
+            get_current_framework,
+            is_patching_suppressed,
+            get_active_langgraph_node_span,
+            current_span_id_context,
+        )
 
         @wraps(original_method)
         async def wrapped(*args, **kwargs):
@@ -196,7 +227,7 @@ class BaseEventHandler(ABC):
                     if active_node_span.error_report is None:
                         active_node_span.error_report = {
                             "error_type": type(e).__name__,
-                            "error_message": str(e)
+                            "error_message": str(e),
                         }
                     raise
 
@@ -204,14 +235,21 @@ class BaseEventHandler(ABC):
             if is_patching_suppressed():
                 return await original_method(*args, **kwargs)
 
-            if kwargs.get('stream', False):
-                return self.wrap_async_stream_method(original_method, provider)(*args, **kwargs)
+            if kwargs.get("stream", False):
+                return self.wrap_async_stream_method(original_method, provider)(
+                    *args, **kwargs
+                )
 
             # Priority 3: Default behavior.
-            model = kwargs.get('model', 'unknown')
+            model = kwargs.get("model", "unknown")
             _framework = framework or get_current_framework()
             span = self.create_span(
-                model=model, provider=provider, framework=_framework, node_type="llm_call", node_name=model)
+                model=model,
+                provider=provider,
+                framework=_framework,
+                node_type="llm_call",
+                node_name=model,
+            )
 
             token = current_span_id_context.set(span.span_id)
             self.handle_call_start(span, *args, **kwargs)
@@ -226,6 +264,7 @@ class BaseEventHandler(ABC):
                 current_span_id_context.reset(token)
 
         return wrapped
+
     # --- Streaming Placeholders ---
     # Subclasses should implement these if they have dedicated streaming methods
 
@@ -240,8 +279,10 @@ class BaseEventHandler(ABC):
             framework = get_current_framework()
 
             logging.warning(
-                f"Streaming not implemented for {provider} in neatlogs. Calling original method.")
+                f"Streaming not implemented for {provider} in neatlogs. Calling original method."
+            )
             return original_method(*args, **kwargs)
+
         return wrapped
 
     def wrap_async_stream_method(self, original_method, provider: str):
@@ -255,6 +296,8 @@ class BaseEventHandler(ABC):
             framework = get_current_framework()
 
             logging.warning(
-                f"Async streaming not implemented for {provider} in neatlogs. Calling original method.")
+                f"Async streaming not implemented for {provider} in neatlogs. Calling original method."
+            )
             return await original_method(*args, **kwargs)
+
         return wrapped

@@ -5,35 +5,26 @@ This module provides the core LLM tracking functionality with OpenTelemetry
 and OpenInference integration for standardized observability.
 """
 
-import time
 import json
 import threading
 import logging
-import traceback
 from uuid import uuid4
 from datetime import datetime
-from typing import Dict, List, Optional, Any, TYPE_CHECKING
+from typing import Dict, List, Optional
 from dataclasses import dataclass, asdict
 import requests
 
 import contextvars
 
-# OpenTelemetry imports
-from opentelemetry import trace
-from opentelemetry.trace import Span as OTelSpan, Status, StatusCode
-
 # Context variable for agentic framework
-_current_framework_ctx = contextvars.ContextVar(
-    'current_framework', default=None)
+_current_framework_ctx = contextvars.ContextVar("current_framework", default=None)
 
 # Context variable for parent span
-current_span_id_context = contextvars.ContextVar(
-    'current_span_id', default=None)
+current_span_id_context = contextvars.ContextVar("current_span_id", default=None)
 
 
 # Context variable to suppress low-level patching
-_suppress_patching_ctx = contextvars.ContextVar(
-    'suppress_patching', default=False)
+_suppress_patching_ctx = contextvars.ContextVar("suppress_patching", default=False)
 
 
 def set_current_framework(framework: str):
@@ -68,15 +59,16 @@ def is_patching_suppressed() -> bool:
 
 # Context variable for passing LangGraph node spans to provider handlers
 _active_langgraph_node_span_ctx = contextvars.ContextVar(
-    'active_langgraph_node_span', default=None)
+    "active_langgraph_node_span", default=None
+)
 
 
-def set_active_langgraph_node_span(span: 'LLMSpan'):
+def set_active_langgraph_node_span(span: "LLMSpan"):
     """Set the active LangGraph node span in the current context."""
     _active_langgraph_node_span_ctx.set(span)
 
 
-def get_active_langgraph_node_span() -> Optional['LLMSpan']:
+def get_active_langgraph_node_span() -> Optional["LLMSpan"]:
     """Get the active LangGraph node span from the current context."""
     return _active_langgraph_node_span_ctx.get()
 
@@ -89,6 +81,7 @@ def clear_active_langgraph_node_span():
 @dataclass
 class LLMCallData:
     """Data structure for LLM call information"""
+
     session_id: str
     agent_id: str
     thread_id: str
@@ -157,7 +150,8 @@ class LLMTracker:
         self.dry_run = dry_run
         if self.dry_run:
             logging.info(
-                "Neatlogs: Dry run mode enabled. Data will NOT be sent to server.")
+                "Neatlogs: Dry run mode enabled. Data will NOT be sent to server."
+            )
             self.enable_server_sending = False
             # Force enable OTel console export for visibility
             self.enable_otel = True
@@ -177,10 +171,17 @@ class LLMTracker:
         if self.enable_otel:
             self._setup_otel(otlp_endpoint, otlp_headers, otel_console_export)
 
-        logging.info(f"LLMTracker initialized - Session: {self.session_id}, "
-                     f"Agent: {self.agent_id}, Thread: {self.thread_id}, OTel: {self.enable_otel}, DryRun: {self.dry_run}")
+        logging.info(
+            f"LLMTracker initialized - Session: {self.session_id}, "
+            f"Agent: {self.agent_id}, Thread: {self.thread_id}, OTel: {self.enable_otel}, DryRun: {self.dry_run}"
+        )
 
-    def _setup_otel(self, otlp_endpoint: Optional[str], otlp_headers: Optional[Dict[str, str]], console_export: bool):
+    def _setup_otel(
+        self,
+        otlp_endpoint: Optional[str],
+        otlp_headers: Optional[Dict[str, str]],
+        console_export: bool,
+    ):
         """
         Configure OpenTelemetry.
 
@@ -193,8 +194,13 @@ class LLMTracker:
         try:
             from opentelemetry import trace
             from opentelemetry.sdk.trace import TracerProvider
-            from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
-            from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+            from opentelemetry.sdk.trace.export import (
+                BatchSpanProcessor,
+                ConsoleSpanExporter,
+            )
+            from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+                OTLPSpanExporter,
+            )
             from opentelemetry.sdk.resources import Resource
             from .otel.processor import NeatlogsSpanProcessor
 
@@ -203,20 +209,23 @@ class LLMTracker:
 
             # If it's a ProxyTracerProvider, it means it hasn't been configured yet.
             # (Note: We check class name to avoid importing ProxyTracerProvider which might be internal)
-            is_proxy = current_provider.__class__.__name__ == 'ProxyTracerProvider'
+            is_proxy = current_provider.__class__.__name__ == "ProxyTracerProvider"
 
             if is_proxy:
                 logging.info(
-                    "Neatlogs: No global TracerProvider detected. Initializing new SDK TracerProvider.")
+                    "Neatlogs: No global TracerProvider detected. Initializing new SDK TracerProvider."
+                )
 
                 # Create Resource
-                resource = Resource.create({
-                    "service.name": "neatlogs",
-                    "service.version": "1.1.7",
-                    "neatlogs.session_id": self.session_id,
-                    "neatlogs.agent_id": self.agent_id,
-                    "neatlogs.thread_id": self.thread_id,
-                })
+                resource = Resource.create(
+                    {
+                        "service.name": "neatlogs",
+                        "service.version": "1.1.7",
+                        "neatlogs.session_id": self.session_id,
+                        "neatlogs.agent_id": self.agent_id,
+                        "neatlogs.thread_id": self.thread_id,
+                    }
+                )
 
                 # Initialize new TracerProvider
                 self._tracer_provider = TracerProvider(resource=resource)
@@ -225,17 +234,18 @@ class LLMTracker:
                 trace.set_tracer_provider(self._tracer_provider)
             else:
                 logging.info(
-                    "Neatlogs: Detected existing global TracerProvider. Attaching to it.")
+                    "Neatlogs: Detected existing global TracerProvider. Attaching to it."
+                )
                 self._tracer_provider = current_provider
 
             # Add Neatlogs Span Processor
             # This captures data for the Neatlogs backend
             if hasattr(self._tracer_provider, "add_span_processor"):
-                self._tracer_provider.add_span_processor(
-                    NeatlogsSpanProcessor(self))
+                self._tracer_provider.add_span_processor(NeatlogsSpanProcessor(self))
             else:
                 logging.warning(
-                    "Neatlogs: Current TracerProvider does not support adding span processors. Neatlogs data capture may fail.")
+                    "Neatlogs: Current TracerProvider does not support adding span processors. Neatlogs data capture may fail."
+                )
 
             # Configure Exporters (only if we created the provider OR if user explicitly asked for them)
             # If we attached to an existing provider, we generally assume the user configured their own exporters.
@@ -244,25 +254,28 @@ class LLMTracker:
             if otlp_endpoint:
                 if hasattr(self._tracer_provider, "add_span_processor"):
                     otlp_exporter = OTLPSpanExporter(
-                        endpoint=otlp_endpoint, headers=otlp_headers or {})
+                        endpoint=otlp_endpoint, headers=otlp_headers or {}
+                    )
                     self._tracer_provider.add_span_processor(
-                        BatchSpanProcessor(otlp_exporter))
+                        BatchSpanProcessor(otlp_exporter)
+                    )
                     logging.info(
-                        f"Neatlogs OTel: Added OTLP exporter for {otlp_endpoint}")
+                        f"Neatlogs OTel: Added OTLP exporter for {otlp_endpoint}"
+                    )
 
             if console_export:
                 if hasattr(self._tracer_provider, "add_span_processor"):
                     console_exporter = ConsoleSpanExporter()
                     self._tracer_provider.add_span_processor(
-                        BatchSpanProcessor(console_exporter))
+                        BatchSpanProcessor(console_exporter)
+                    )
                     logging.info("Neatlogs OTel: Added Console exporter")
 
             self._tracer = trace.get_tracer("neatlogs")
             logging.info("Neatlogs: OpenTelemetry setup complete.")
 
         except ImportError as e:
-            logging.error(
-                f"Neatlogs: Failed to import OpenTelemetry components: {e}")
+            logging.error(f"Neatlogs: Failed to import OpenTelemetry components: {e}")
             self.enable_otel = False
         except Exception as e:
             logging.error(f"Neatlogs: Failed to configure OpenTelemetry: {e}")
@@ -293,24 +306,25 @@ class LLMTracker:
                     "dataDump": json.dumps(trace_data),
                     "projectAPIKey": data.api_key or self.api_key,
                     "externalTraceId": data.trace_id,
-                    "timestamp": datetime.now().timestamp()
+                    "timestamp": datetime.now().timestamp(),
                 }
 
                 logging.debug(f"Neatlogs: Sending data to server at {url}")
 
                 # Use a short timeout to prevent hanging
                 response = requests.post(
-                    url, json=payload, headers=headers, timeout=10.0)
+                    url, json=payload, headers=headers, timeout=10.0
+                )
                 response.raise_for_status()
 
                 logging.debug(
-                    f"Neatlogs: Successfully sent data to server, status: {response.status_code}")
+                    f"Neatlogs: Successfully sent data to server, status: {response.status_code}"
+                )
 
             except requests.exceptions.RequestException as e:
                 logging.error(f"Neatlogs: Error sending data to server: {e}")
             except Exception as e:
-                logging.error(
-                    f"Neatlogs: Unexpected error in background sender: {e}")
+                logging.error(f"Neatlogs: Unexpected error in background sender: {e}")
 
         # Run in background thread
         thread = threading.Thread(target=_send)
@@ -326,7 +340,7 @@ class LLMTracker:
         This ensures a local backup of all traces is available independent of
         server connectivity.
         """
-        self.file_logger = logging.getLogger(f'llm_tracker_{self.session_id}')
+        self.file_logger = logging.getLogger(f"llm_tracker_{self.session_id}")
         self.file_logger.setLevel(logging.INFO)
         # Remove existing handlers to avoid duplicates
         for handler in self.file_logger.handlers[:]:
@@ -368,7 +382,8 @@ class LLMTracker:
         and that the OpenTelemetry tracer provider is properly shut down (if owned).
         """
         logging.debug(
-            f"Neatlogs: LLMTracker.shutdown() called. Waiting for {len(self._threads)} sender threads to complete.")
+            f"Neatlogs: LLMTracker.shutdown() called. Waiting for {len(self._threads)} sender threads to complete."
+        )
 
         # Wait for sender threads
         for thread in self._threads:
@@ -384,13 +399,12 @@ class LLMTracker:
         if self.enable_otel and self._tracer_provider:
             try:
                 self._tracer_provider.shutdown()
-                logging.debug(
-                    "Neatlogs: OpenTelemetry tracer shutdown complete")
+                logging.debug("Neatlogs: OpenTelemetry tracer shutdown complete")
             except Exception as e:
-                logging.debug(
-                    f"Neatlogs: Error shutting down OTel tracer: {e}")
+                logging.debug(f"Neatlogs: Error shutting down OTel tracer: {e}")
 
         logging.debug("Neatlogs: LLMTracker.shutdown() finished.")
+
 
 # --- Global Tracker Instance and Initialization ---
 

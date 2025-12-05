@@ -8,9 +8,8 @@ enabling accurate and detailed logging of streaming LLM API usage.
 """
 
 import time
-from typing import Any,  Iterator
+from typing import Any, Iterator
 from .core import LLMSpan
-from .semconv import MessageAttributes
 
 
 class NeatlogsStreamWrapper:
@@ -22,7 +21,13 @@ class NeatlogsStreamWrapper:
     completion after the stream ends for comprehensive telemetry.
     """
 
-    def __init__(self, stream: Any, span: LLMSpan, request_kwargs: dict, context_token: Any = None):
+    def __init__(
+        self,
+        stream: Any,
+        span: LLMSpan,
+        request_kwargs: dict,
+        context_token: Any = None,
+    ):
         self._stream = stream
         self._span = span
         self._request_kwargs = request_kwargs
@@ -61,39 +66,55 @@ class NeatlogsStreamWrapper:
 
     def _process_chunk(self, chunk: Any) -> None:
         self._chunk_count += 1
-        if self._first_token_time is None and hasattr(chunk, 'choices') and chunk.choices:
-            if any(choice.delta.content for choice in chunk.choices if hasattr(choice.delta, 'content')):
+        if (
+            self._first_token_time is None
+            and hasattr(chunk, "choices")
+            and chunk.choices
+        ):
+            if any(
+                choice.delta.content
+                for choice in chunk.choices
+                if hasattr(choice.delta, "content")
+            ):
                 self._first_token_time = time.time()
 
-        if hasattr(chunk, 'id') and chunk.id and not self._response_id:
+        if hasattr(chunk, "id") and chunk.id and not self._response_id:
             self._response_id = chunk.id
 
-        if hasattr(chunk, 'model') and chunk.model and not self._model:
+        if hasattr(chunk, "model") and chunk.model and not self._model:
             self._model = chunk.model
 
-        if hasattr(chunk, 'choices') and chunk.choices:
+        if hasattr(chunk, "choices") and chunk.choices:
             for choice in chunk.choices:
-                if hasattr(choice, 'delta') and choice.delta:
-                    if hasattr(choice.delta, 'content') and choice.delta.content:
+                if hasattr(choice, "delta") and choice.delta:
+                    if hasattr(choice.delta, "content") and choice.delta.content:
                         self._content_chunks.append(choice.delta.content)
-                    if hasattr(choice.delta, 'tool_calls') and choice.delta.tool_calls:
+                    if hasattr(choice.delta, "tool_calls") and choice.delta.tool_calls:
                         for tool_call in choice.delta.tool_calls:
                             idx = tool_call.index
                             if idx not in self._tool_calls:
                                 self._tool_calls[idx] = {
-                                    "id": "", "type": "function", "function": {"name": "", "arguments": ""}}
+                                    "id": "",
+                                    "type": "function",
+                                    "function": {"name": "", "arguments": ""},
+                                }
                             if tool_call.id:
-                                self._tool_calls[idx]['id'] = tool_call.id
+                                self._tool_calls[idx]["id"] = tool_call.id
                             if tool_call.function:
                                 if tool_call.function.name:
-                                    self._tool_calls[idx]['function']['name'] = tool_call.function.name
+                                    self._tool_calls[idx]["function"][
+                                        "name"
+                                    ] = tool_call.function.name
                                 if tool_call.function.arguments:
-                                    self._tool_calls[idx]['function']['arguments'] += tool_call.function.arguments
-                if hasattr(choice, 'finish_reason') and choice.finish_reason:
+                                    self._tool_calls[idx]["function"][
+                                        "arguments"
+                                    ] += tool_call.function.arguments
+                if hasattr(choice, "finish_reason") and choice.finish_reason:
                     self._finish_reason = choice.finish_reason
 
     def _finalize_stream(self) -> None:
         from .core import current_span_id_context
+
         full_content = "".join(self._content_chunks)
         self._span.completion = full_content
         if self._usage:

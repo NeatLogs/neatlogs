@@ -6,9 +6,12 @@ Handles CrewAI specific API patterns for comprehensive workflow and agent-level 
 """
 
 import json
-import logging
 from functools import wraps
-from ..core import LLMSpan, current_span_id_context, set_current_agent_name, clear_current_agent_name
+from ..core import (
+    current_span_id_context,
+    set_current_agent_name,
+    clear_current_agent_name,
+)
 from .base import BaseEventHandler
 
 
@@ -26,6 +29,7 @@ class CrewAIHandler(BaseEventHandler):
 
     def wrap_kickoff(self, original_kickoff):
         """Wraps `Crew.kickoff` to create a root workflow span."""
+
         @wraps(original_kickoff)
         def tracked_kickoff(crew_self, *args, **kwargs):
             if not self.tracker:
@@ -36,13 +40,15 @@ class CrewAIHandler(BaseEventHandler):
                 provider="crewai_framework",
                 framework="crewai",
                 node_type="workflow",
-                node_name="Crew Kickoff"
+                node_name="Crew Kickoff",
             )
             token = current_span_id_context.set(workflow_span.span_id)
 
-            inputs = kwargs.get('inputs', {})
+            inputs = kwargs.get("inputs", {})
             try:
-                workflow_span.messages = [{"role": "user", "content": json.dumps(inputs)}]
+                workflow_span.messages = [
+                    {"role": "user", "content": json.dumps(inputs)}
+                ]
             except:
                 workflow_span.messages = [{"role": "user", "content": str(inputs)}]
 
@@ -52,10 +58,10 @@ class CrewAIHandler(BaseEventHandler):
                     workflow_span.completion = json.dumps(result)
                 except:
                     workflow_span.completion = str(result)
-                
+
                 if workflow_span.end_time is None:
                     self.tracker.end_llm_span(workflow_span, success=True)
-                
+
                 return result
             except Exception as e:
                 if workflow_span.end_time is None:
@@ -63,11 +69,12 @@ class CrewAIHandler(BaseEventHandler):
                 raise
             finally:
                 current_span_id_context.reset(token)
-        
+
         return tracked_kickoff
 
     def wrap_agent_execute(self, original_execute):
         """Wraps `Agent.execute_task` to create a nested agent-level span."""
+
         @wraps(original_execute)
         def tracked_execute(agent_self, *args, **kwargs):
             if not self.tracker:
@@ -78,19 +85,24 @@ class CrewAIHandler(BaseEventHandler):
                 provider="crewai_framework",
                 framework="crewai",
                 node_type="agent_execution",
-                node_name=agent_self.role
+                node_name=agent_self.role,
             )
-            
+
             span_token = current_span_id_context.set(agent_span.span_id)
             set_current_agent_name(agent_self.role)
 
             try:
-                task = next((arg for arg in args if hasattr(arg, 'description')), kwargs.get('task'))
+                task = next(
+                    (arg for arg in args if hasattr(arg, "description")),
+                    kwargs.get("task"),
+                )
                 if task:
-                    agent_span.messages = [{"role": "user", "content": task.description}]
+                    agent_span.messages = [
+                        {"role": "user", "content": task.description}
+                    ]
 
                 result = original_execute(agent_self, *args, **kwargs)
-                
+
                 if isinstance(result, str):
                     agent_span.completion = result
                 else:

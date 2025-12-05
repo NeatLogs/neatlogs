@@ -29,7 +29,7 @@ classifiers = [
     "Topic :: System :: Logging",
     "Topic :: System :: Monitoring",
 ]
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 dependencies = [
     "openinference-instrumentation>=0.1.27",
     "openinference-semantic-conventions>=0.1.13",
@@ -57,7 +57,7 @@ google-genai = [
 ]
 langgraph = [
     "langgraph>=0.1.0",
-    "openinference-instrumentation-langgraph>=0.1.0",
+    "openinference-instrumentation-langchain>=0.1.0",
 ]
 crewai = ["openinference-instrumentation-crewai>=0.1.0"]
 

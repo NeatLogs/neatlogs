@@ -7,7 +7,6 @@ extracts relevant LLM data, and sends it to the Neatlogs backend.
 """
 
 import logging
-import threading
 import traceback
 from typing import Optional
 
@@ -15,7 +14,7 @@ from opentelemetry.sdk.trace import SpanProcessor, ReadableSpan
 from opentelemetry.trace import Span
 
 from ..core import LLMTracker, LLMCallData
-from ..semconv import LLMAttributes, MessageAttributes, LLMEvents
+from ..semconv import LLMAttributes
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +38,7 @@ class NeatlogsSpanProcessor(SpanProcessor):
 
     def on_end(self, span: ReadableSpan) -> None:
         """Called when a span is ended."""
-        logger.error(
-            f"DEBUG: on_end called for span: {span.name if span else 'None'}")
+        logger.error(f"DEBUG: on_end called for span: {span.name if span else 'None'}")
         if not span:
             return
 
@@ -52,9 +50,9 @@ class NeatlogsSpanProcessor(SpanProcessor):
         # OpenInference uses 'openinference.span.kind' = 'LLM'
         # OTel GenAI uses 'gen_ai.system' or similar
         is_llm = (
-            attributes.get("openinference.span.kind") == "LLM" or
-            "llm.model_name" in attributes or
-            "gen_ai.system" in attributes
+            attributes.get("openinference.span.kind") == "LLM"
+            or "llm.model_name" in attributes
+            or "gen_ai.system" in attributes
         )
 
         if not is_llm:
@@ -86,37 +84,35 @@ class NeatlogsSpanProcessor(SpanProcessor):
 
         # print(f"DEBUG: Span Attributes Keys: {list(attributes.keys())}")
         print(f"DEBUG: Input Value: {attributes.get('input.value')}")
-        parent_span_id = format(span.parent.span_id,
-                                "016x") if span.parent else None
+        parent_span_id = format(span.parent.span_id, "016x") if span.parent else None
 
         # Extract LLM fields using semantic conventions
         model = (
-            attributes.get(LLMAttributes.LLM_REQUEST_MODEL) or
-            attributes.get(LLMAttributes.LLM_RESPONSE_MODEL) or
-            attributes.get("gen_ai.request.model") or
-            "unknown"
+            attributes.get(LLMAttributes.LLM_REQUEST_MODEL)
+            or attributes.get(LLMAttributes.LLM_RESPONSE_MODEL)
+            or attributes.get("gen_ai.request.model")
+            or "unknown"
         )
 
         provider = (
-            attributes.get(LLMAttributes.LLM_SYSTEM) or
-            attributes.get("gen_ai.system") or
-            "unknown"
+            attributes.get(LLMAttributes.LLM_SYSTEM)
+            or attributes.get("gen_ai.system")
+            or "unknown"
         )
 
         # Token usage
         prompt_tokens = (
-            attributes.get(LLMAttributes.LLM_USAGE_PROMPT_TOKENS) or
-            attributes.get(LLMAttributes.GEN_AI_USAGE_INPUT_TOKENS) or
-            0
+            attributes.get(LLMAttributes.LLM_USAGE_PROMPT_TOKENS)
+            or attributes.get(LLMAttributes.GEN_AI_USAGE_INPUT_TOKENS)
+            or 0
         )
         completion_tokens = (
-            attributes.get(LLMAttributes.LLM_USAGE_COMPLETION_TOKENS) or
-            attributes.get(LLMAttributes.GEN_AI_USAGE_OUTPUT_TOKENS) or
-            0
+            attributes.get(LLMAttributes.LLM_USAGE_COMPLETION_TOKENS)
+            or attributes.get(LLMAttributes.GEN_AI_USAGE_OUTPUT_TOKENS)
+            or 0
         )
-        total_tokens = (
-            attributes.get(LLMAttributes.LLM_USAGE_TOTAL_TOKENS) or
-            (prompt_tokens + completion_tokens)
+        total_tokens = attributes.get(LLMAttributes.LLM_USAGE_TOTAL_TOKENS) or (
+            prompt_tokens + completion_tokens
         )
 
         # Cost
@@ -135,6 +131,7 @@ class NeatlogsSpanProcessor(SpanProcessor):
 
         if input_value:
             import json
+
             try:
                 if input_mime_type == "application/json":
                     input_data = json.loads(input_value)
@@ -148,8 +145,7 @@ class NeatlogsSpanProcessor(SpanProcessor):
                                 for part in parts:
                                     if isinstance(part, dict) and "text" in part:
                                         text += part["text"]
-                                messages.append(
-                                    {"role": role, "content": text})
+                                messages.append({"role": role, "content": text})
                         # Handle OpenAI format: {"messages": [{"role": "user", "content": "..."}]}
                         elif "messages" in input_data:
                             messages = input_data["messages"]
@@ -158,30 +154,33 @@ class NeatlogsSpanProcessor(SpanProcessor):
                             messages.append(input_data)
                 else:
                     # Treat as raw string input
-                    messages.append(
-                        {"role": "user", "content": str(input_value)})
+                    messages.append({"role": "user", "content": str(input_value)})
             except Exception:
                 # Fallback: just use raw value
                 messages.append({"role": "user", "content": str(input_value)})
 
         completion = (
-            attributes.get("llm.output_messages.0.message.content") or
-            attributes.get("output.value") or  # Fallback to output.value
-            attributes.get("gen_ai.output.messages") or
-            ""
+            attributes.get("llm.output_messages.0.message.content")
+            or attributes.get("output.value")  # Fallback to output.value
+            or attributes.get("gen_ai.output.messages")
+            or ""
         )
 
         # If completion is still empty but we have output.value as JSON, try to parse it
-        if not completion and attributes.get("output.value") and attributes.get("output.mime_type") == "application/json":
+        if (
+            not completion
+            and attributes.get("output.value")
+            and attributes.get("output.mime_type") == "application/json"
+        ):
             import json
+
             try:
                 output_data = json.loads(attributes.get("output.value"))
                 # Google GenAI response format
                 if isinstance(output_data, dict) and "candidates" in output_data:
                     candidates = output_data["candidates"]
                     if candidates and len(candidates) > 0:
-                        parts = candidates[0].get(
-                            "content", {}).get("parts", [])
+                        parts = candidates[0].get("content", {}).get("parts", [])
                         text = ""
                         for part in parts:
                             if isinstance(part, dict) and "text" in part:
@@ -200,10 +199,7 @@ class NeatlogsSpanProcessor(SpanProcessor):
         error_report = None
         if not span.status.is_ok and span.status.description:
             status = "FAILURE"
-            error_report = {
-                "message": span.status.description,
-                "type": "SpanError"
-            }
+            error_report = {"message": span.status.description, "type": "SpanError"}
 
         # Create LLMCallData
         call_data = LLMCallData(
@@ -231,7 +227,7 @@ class NeatlogsSpanProcessor(SpanProcessor):
             tags=self.tracker.tags,
             error_report=error_report,
             status=status,
-            api_key=self.tracker.api_key
+            api_key=self.tracker.api_key,
         )
 
         # Send to server

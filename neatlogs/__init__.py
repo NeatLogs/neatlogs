@@ -13,7 +13,7 @@ import threading
 from typing import List, Optional, Dict
 
 __version__ = "1.1.7"
-__all__ = ['init', 'get_tracker', 'add_tags', 'get_langchain_callback_handler']
+__all__ = ["init", "get_tracker", "add_tags", "get_langchain_callback_handler"]
 
 # --- Global Tracker Instance and Initialization ---
 
@@ -41,7 +41,7 @@ def init(
         debug (bool): Enable debug logging. Defaults to False.
         enable_otel (bool): Enable OpenTelemetry tracing. Defaults to False.
         otlp_endpoint (str, optional): OTLP HTTP endpoint for exporting traces.
-        otlp_headers (Dict[str, str], optional): Headers for OTLP exporter 
+        otlp_headers (Dict[str, str], optional): Headers for OTLP exporter
             (e.g., {"Authorization": "Bearer xxx"}).
         otel_console_export (bool): Enable console export for debugging OTel spans.
         dry_run (bool): If True, disables sending data to Neatlogs server and enables console logging.
@@ -90,6 +90,7 @@ def init(
                 dry_run=dry_run,
             )
             from .instrumentation import manager
+
             manager.instrument_all(_global_tracker)
 
             # Log initialization info
@@ -100,16 +101,18 @@ def init(
             if tags:
                 logging.info(f"   🏷️  Tags: {tags}")
             if enable_otel or dry_run:
-                logging.info(f"   📡 OpenTelemetry: Enabled")
+                logging.info("   📡 OpenTelemetry: Enabled")
                 if otlp_endpoint:
                     logging.info(f"   🔗 OTLP Endpoint: {otlp_endpoint}")
             if dry_run:
-                logging.info(f"   🧪 Dry Run: Enabled (No data sent to server)")
+                logging.info("   🧪 Dry Run: Enabled (No data sent to server)")
 
     return _global_tracker
 
 
-def get_langchain_callback_handler(api_key: Optional[str] = None, tags: Optional[List[str]] = None):
+def get_langchain_callback_handler(
+    api_key: Optional[str] = None, tags: Optional[List[str]] = None
+):
     """
     Get the LangChain callback handler for Neatlogs tracking.
 
@@ -124,7 +127,10 @@ def get_langchain_callback_handler(api_key: Optional[str] = None, tags: Optional
     Returns:
         NeatlogsLangchainCallbackHandler: The callback handler instance.
     """
-    from .integration.callbacks.langchain.callback import NeatlogsLangchainCallbackHandler
+    from .integration.callbacks.langchain.callback import (
+        NeatlogsLangchainCallbackHandler,
+    )
+
     return NeatlogsLangchainCallbackHandler(api_key=api_key, tags=tags)
 
 
@@ -141,8 +147,7 @@ def add_tags(tags: List[str]):
     """
     tracker = get_tracker()
     if not tracker:
-        raise RuntimeError(
-            "Tracker not initialized. Call neatlogs.init() first.")
+        raise RuntimeError("Tracker not initialized. Call neatlogs.init() first.")
 
     tracker.add_tags(tags)
 

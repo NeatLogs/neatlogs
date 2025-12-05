@@ -10,7 +10,6 @@ This module streamlines semantic data capture and aids future integration.
 from typing import Dict, Any
 from openinference.semconv.trace import (
     SpanAttributes,
-    OpenInferenceSpanKindValues,
     MessageAttributes as OIMessageAttributes,
     ToolCallAttributes as OIToolCallAttributes,
 )
@@ -80,17 +79,22 @@ class MessageAttributes:
 
     Uses OpenInference MessageAttributes where possible.
     """
+
     # We use the OpenInference convention: llm.input_messages.{i}.message.role
     # These are helper constants for the structure
     MESSAGE_ROLE = OIMessageAttributes.MESSAGE_ROLE
     MESSAGE_CONTENT = OIMessageAttributes.MESSAGE_CONTENT
     MESSAGE_TOOL_CALLS = OIMessageAttributes.MESSAGE_TOOL_CALLS
     MESSAGE_FUNCTION_NAME = OIMessageAttributes.MESSAGE_FUNCTION_CALL_NAME
-    MESSAGE_FUNCTION_ARGUMENTS = OIMessageAttributes.MESSAGE_FUNCTION_CALL_ARGUMENTS_JSON
+    MESSAGE_FUNCTION_ARGUMENTS = (
+        OIMessageAttributes.MESSAGE_FUNCTION_CALL_ARGUMENTS_JSON
+    )
 
     TOOL_CALL_ID = OIToolCallAttributes.TOOL_CALL_ID
     TOOL_CALL_FUNCTION_NAME = OIToolCallAttributes.TOOL_CALL_FUNCTION_NAME
-    TOOL_CALL_FUNCTION_ARGUMENTS_JSON = OIToolCallAttributes.TOOL_CALL_FUNCTION_ARGUMENTS_JSON
+    TOOL_CALL_FUNCTION_ARGUMENTS_JSON = (
+        OIToolCallAttributes.TOOL_CALL_FUNCTION_ARGUMENTS_JSON
+    )
 
 
 class LLMRequestTypeValues:
@@ -98,6 +102,7 @@ class LLMRequestTypeValues:
 
     Contains enumerated constants for categorizing different types of LLM requests.
     """
+
     CHAT = "chat"
     COMPLETION = "completion"
     EMBEDDING = "embedding"
@@ -155,6 +160,7 @@ def get_provider_system_name(provider: str) -> str:
 def format_messages_for_attribute(messages: list) -> str:
     """Format messages for OpenTelemetry attribute storage"""
     import json
+
     try:
         # Remove any non-serializable data and limit size
         clean_messages = []
@@ -163,7 +169,7 @@ def format_messages_for_attribute(messages: list) -> str:
                 clean_msg = {
                     "role": msg.get("role", "unknown"),
                     # Limit content length
-                    "content": str(msg.get("content", ""))[:2000]
+                    "content": str(msg.get("content", ""))[:2000],
                 }
                 # Include tool calls if present
                 if "tool_calls" in msg:
@@ -177,6 +183,7 @@ def format_messages_for_attribute(messages: list) -> str:
 def format_tools_for_attribute(tools: list) -> str:
     """Format tool definitions for OpenTelemetry attribute storage"""
     import json
+
     try:
         clean_tools = []
         for tool in tools:
@@ -184,12 +191,20 @@ def format_tools_for_attribute(tools: list) -> str:
                 clean_tool = {
                     "name": tool.get("name", "unknown"),
                     "type": tool.get("type", "function"),
-                    "description": str(tool.get("description", ""))[:500]
+                    "description": str(tool.get("description", ""))[:500],
                 }
                 clean_tools.append(clean_tool)
         return json.dumps(clean_tools)
     except Exception:
-        return json.dumps([{"name": "unknown", "type": "function", "description": "serialization_error"}])
+        return json.dumps(
+            [
+                {
+                    "name": "unknown",
+                    "type": "function",
+                    "description": "serialization_error",
+                }
+            ]
+        )
 
 
 def extract_tool_calls_data(content_blocks) -> list:
@@ -197,20 +212,20 @@ def extract_tool_calls_data(content_blocks) -> list:
     tool_calls = []
     try:
         for block in content_blocks:
-            if hasattr(block, 'type') and block.type == 'tool_use':
+            if hasattr(block, "type") and block.type == "tool_use":
                 tool_call = {
-                    "id": getattr(block, 'id', 'unknown'),
-                    "name": getattr(block, 'name', 'unknown'),
+                    "id": getattr(block, "id", "unknown"),
+                    "name": getattr(block, "name", "unknown"),
                     "type": "function",
-                    "arguments": getattr(block, 'input', {})
+                    "arguments": getattr(block, "input", {}),
                 }
                 tool_calls.append(tool_call)
-            elif isinstance(block, dict) and block.get('type') == 'tool_use':
+            elif isinstance(block, dict) and block.get("type") == "tool_use":
                 tool_call = {
-                    "id": block.get('id', 'unknown'),
-                    "name": block.get('name', 'unknown'),
+                    "id": block.get("id", "unknown"),
+                    "name": block.get("name", "unknown"),
                     "type": "function",
-                    "arguments": block.get('input', {})
+                    "arguments": block.get("input", {}),
                 }
                 tool_calls.append(tool_call)
     except Exception:
@@ -218,8 +233,9 @@ def extract_tool_calls_data(content_blocks) -> list:
     return tool_calls
 
 
-def get_common_span_attributes(session_id: str, agent_id: str, thread_id: str,
-                               model: str, provider: str) -> Dict[str, Any]:
+def get_common_span_attributes(
+    session_id: str, agent_id: str, thread_id: str, model: str, provider: str
+) -> Dict[str, Any]:
     """Get common attributes that should be set on all LLM spans"""
     return {
         LLMAttributes.AGENT_SESSION_ID: session_id,
