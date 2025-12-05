@@ -12,6 +12,7 @@ from .base import BaseEventHandler
 from ..semconv import (
     extract_tool_calls_data,
 )
+from ..core import LLMSpan
 
 
 class AnthropicHandler(BaseEventHandler):
@@ -98,7 +99,7 @@ class AnthropicHandler(BaseEventHandler):
 
         return data
 
-    def handle_call_start(self, span: "LLMSpan", *args, **kwargs):
+    def handle_call_start(self, span: LLMSpan, *args, **kwargs):
         super().handle_call_start(span, *args, **kwargs)
 
     # --- Streaming Support ---

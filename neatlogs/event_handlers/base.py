@@ -19,6 +19,7 @@ from typing import Dict, List, Any, Optional
 import logging
 
 from ..token_counting import estimate_cost
+from ..core import LLMSpan
 
 
 class BaseEventHandler(ABC):
@@ -43,7 +44,7 @@ class BaseEventHandler(ABC):
         operation: str = "llm_call",
         node_type: str = "llm_call",
         node_name: str = None,
-    ) -> "LLMSpan":
+    ) -> LLMSpan:
         """
         Create a new LLMSpan object pre-filled with standard metadata for Neatlogs.
 

@@ -5,6 +5,7 @@ This module provides the core LLM tracking functionality with OpenTelemetry
 and OpenInference integration for standardized observability.
 """
 
+import os
 import json
 import threading
 import logging
@@ -13,6 +14,7 @@ from datetime import datetime
 from typing import Dict, List, Optional
 from dataclasses import dataclass, asdict
 import requests
+from opentelemetry.trace import Span
 
 import contextvars
 
@@ -63,12 +65,12 @@ _active_langgraph_node_span_ctx = contextvars.ContextVar(
 )
 
 
-def set_active_langgraph_node_span(span: "LLMSpan"):
+def set_active_langgraph_node_span(span: Span):
     """Set the active LangGraph node span in the current context."""
     _active_langgraph_node_span_ctx.set(span)
 
 
-def get_active_langgraph_node_span() -> Optional["LLMSpan"]:
+def get_active_langgraph_node_span() -> Optional[Span]:
     """Get the active LangGraph node span from the current context."""
     return _active_langgraph_node_span_ctx.get()
 
@@ -297,7 +299,9 @@ class LLMTracker:
 
         def _send():
             try:
-                url = "https://app.neatlogs.com/api/data/v2"
+                url = os.getenv(
+                    "NEATLOGS_API_URL", "https://app.neatlogs.com/api/data/v2"
+                )
                 headers = {"Content-Type": "application/json"}
 
                 # Prepare payload matching the server's expected format

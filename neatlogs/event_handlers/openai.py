@@ -10,6 +10,7 @@ import logging
 from typing import Dict, List, Any
 from .base import BaseEventHandler
 from ..stream_wrapper import NeatlogsStreamWrapper
+from ..core import LLMSpan
 
 
 class OpenAIHandler(BaseEventHandler):
@@ -92,7 +93,7 @@ class OpenAIHandler(BaseEventHandler):
 
         return data
 
-    def handle_call_start(self, span: "LLMSpan", *args, **kwargs):
+    def handle_call_start(self, span: LLMSpan, *args, **kwargs):
         super().handle_call_start(span, *args, **kwargs)
 
     # --- Advanced Streaming Support ---
