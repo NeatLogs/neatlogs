@@ -91,7 +91,7 @@ def init(
             )
             from .instrumentation import manager
 
-            manager.instrument_all(_global_tracker)
+            manager.instrument_all()
 
             # Log initialization info
             logging.info("🚀 Neatlogs Tracker initialized successfully!")

@@ -70,3 +70,11 @@ Documentation = "https://docs.neatlogs.com/"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["neatlogs"]
+
+[dependency-groups]
+dev = [
+    "fastapi[standard]>=0.124.0",
+    "pytest>=7.0.0",
+    "pytest-mock>=3.10.0",
+    "respx>=0.20.0",
+]

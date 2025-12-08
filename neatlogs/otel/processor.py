@@ -82,8 +82,6 @@ class NeatlogsSpanProcessor(SpanProcessor):
         span_id = format(span.context.span_id, "016x")
         trace_id = format(span.context.trace_id, "032x")
 
-        # print(f"DEBUG: Span Attributes Keys: {list(attributes.keys())}")
-        print(f"DEBUG: Input Value: {attributes.get('input.value')}")
         parent_span_id = format(span.parent.span_id, "016x") if span.parent else None
 
         # Extract LLM fields using semantic conventions
