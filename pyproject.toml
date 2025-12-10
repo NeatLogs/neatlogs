@@ -60,6 +60,10 @@ langgraph = [
     "openinference-instrumentation-langchain>=0.1.0",
 ]
 crewai = ["openinference-instrumentation-crewai>=0.1.0"]
+openai-agents = [
+    "openai-agents>=0.1.0",
+    "openinference-instrumentation-openai-agents>=0.1.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/NeatLogs/neatlogs"
