@@ -5,7 +5,6 @@ This example demonstrates how to use Neatlogs with OpenAI API calls.
 Traces will be sent to the local dev server.
 """
 
-import os
 from neatlogs import init
 
 # Initialize neatlogs with debug mode and OpenTelemetry enabled
@@ -37,6 +36,10 @@ try:
     print(f"\nResponse: {response.choices[0].message.content}")
     print("\n✓ Success! Trace sent successfully")
     print("\n" + "=" * 60)
+
+    import time
+
+    time.sleep(1)
 
 except ImportError:
     print("\n⚠ Error: OpenAI library not installed")

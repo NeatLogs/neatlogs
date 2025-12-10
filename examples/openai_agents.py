@@ -4,7 +4,6 @@ Neatlogs OpenAI Agents SDK Example (Multi-span)
 This example demonstrates a flow with tool usage to generate multiple spans.
 """
 
-import os
 from neatlogs import init
 
 # Initialize neatlogs

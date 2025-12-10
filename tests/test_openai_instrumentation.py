@@ -98,7 +98,9 @@ class TestOpenAIInstrumentation:
             for s in spans
             if s.attributes and s.attributes.get("openinference.span.kind") == "LLM"
         ]
-        assert len(llm_spans) == 1, f"Exactly one LLM span should be created, got {len(llm_spans)}"
+        assert (
+            len(llm_spans) == 1
+        ), f"Exactly one LLM span should be created, got {len(llm_spans)}"
 
         # Verify span attributes
         span = llm_spans[0]
@@ -167,7 +169,10 @@ class TestOpenAIInstrumentation:
                 model="gpt-3.5-turbo",
                 messages=[{"role": "user", "content": f"Message {i}"}],
             )
-            assert response.choices[0].message.content == "Hello! How can I help you today?"
+            assert (
+                response.choices[0].message.content
+                == "Hello! How can I help you today?"
+            )
 
         # Give time for span processing
         import time
@@ -268,7 +273,7 @@ class TestSpanProcessorDataExtraction:
         }
 
         # Process the span
-        processor._process_llm_span(span)
+        processor._process_span(span)
 
         # Verify no errors occurred
         assert True, "Span processing should complete without errors"
@@ -307,7 +312,7 @@ class TestSpanProcessorDataExtraction:
             "llm.system": "openai",
         }
 
-        processor._process_llm_span(span)
+        processor._process_span(span)
 
         # Verify processing completed
         assert True, "Token extraction should work correctly"
