@@ -1,7 +1,7 @@
 """
-Neatlogs OpenAI Agents SDK Example
-==================================
-This example demonstrates a simple flow using the OpenAI Agents SDK.
+Neatlogs OpenAI Agents SDK Example (Multi-span)
+==============================================
+This example demonstrates a flow with tool usage to generate multiple spans.
 """
 
 import os
@@ -15,16 +15,30 @@ print("Neatlogs OpenAI Agents SDK Example")
 print("=" * 60)
 
 try:
-    from agents import Agent, Runner
+    from agents import Agent, Runner, function_tool
 
-    # Create a simple agent
-    # This matches the "Hello World" example from the docs
-    agent = Agent(name="Assistant", instructions="You are a helpful assistant")
+    # 1. Define a custom tool
+    @function_tool
+    def get_weather(city: str) -> str:
+        """Returns weather information for the specified city."""
+        # This execution will appear as a child span in your trace
+        return f"The weather in {city} is sunny and 75°F."
 
-    print("\nRunning agent...")
+    # 2. Create an agent with the tool
+    agent = Agent(
+        name="WeatherAssistant",
+        instructions="You are a helpful assistant that can check the weather.",
+        tools=[get_weather],
+    )
 
-    # Run the agent synchronously
-    result = Runner.run_sync(agent, "Write a haiku about recursion in programming.")
+    print("\nRunning agent with tool...")
+
+    # 3. Run with a prompt that requires the tool
+    # This will generate:
+    # - Span 1: Agent thinking
+    # - Span 2: Tool execution (get_weather)
+    # - Span 3: Agent final response
+    result = Runner.run_sync(agent, "What is the weather like in San Francisco?")
 
     print(f"\nResponse: {result.final_output}")
     print("\n✓ Success!")
