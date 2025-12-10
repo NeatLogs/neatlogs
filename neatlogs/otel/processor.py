@@ -38,29 +38,22 @@ class NeatlogsSpanProcessor(SpanProcessor):
 
     def on_end(self, span: ReadableSpan) -> None:
         """Called when a span is ended."""
-        logger.error(f"DEBUG: on_end called for span: {span.name if span else 'None'}")
+        logger.debug(f"on_end called for span: {span.name if span else 'None'}")
         if not span:
             return
 
-        # We only care about LLM spans (or chains/agents if we decide to track those too)
-        # For now, let's focus on spans that have LLM attributes
         attributes = span.attributes or {}
+        span_kind = attributes.get("openinference.span.kind")
 
-        # Check if it's an LLM span
-        # OpenInference uses 'openinference.span.kind' = 'LLM'
-        # OTel GenAI uses 'gen_ai.system' or similar
-        is_llm = (
-            attributes.get("openinference.span.kind") == "LLM"
-            or "llm.model_name" in attributes
-            or "gen_ai.system" in attributes
-        )
+        logger.debug(f"Processing span '{span.name}' with span_kind: {span_kind}")
 
-        if not is_llm:
+        # Process all OpenInference spans (LLM, TOOL, AGENT, CHAIN, etc.)
+        # Skip spans without openinference.span.kind as they're likely infrastructure spans
+        if not span_kind:
             return
 
         try:
-            # print(f"DEBUG: NeatlogsSpanProcessor received LLM span: {span.name}")
-            self._process_llm_span(span)
+            self._process_span(span)
         except Exception as e:
             print(f"DEBUG: Error processing span: {e}")
             logger.error(f"Neatlogs: Failed to process span {span.name}: {e}")
@@ -74,15 +67,19 @@ class NeatlogsSpanProcessor(SpanProcessor):
         """Called when the tracer provider is force flushed."""
         return True
 
-    def _process_llm_span(self, span: ReadableSpan):
+    def _process_span(self, span: ReadableSpan):
         """Extract data from span and send to Neatlogs."""
         attributes = span.attributes or {}
+        span_kind = attributes.get("openinference.span.kind", "unknown")
 
         # Extract core fields
         span_id = format(span.context.span_id, "016x")
         trace_id = format(span.context.trace_id, "032x")
 
         parent_span_id = format(span.parent.span_id, "016x") if span.parent else None
+
+        # Log hierarchy for debugging
+        logger.info(f"Span: {span.name} ({span_kind}) - ID: {span_id[:8]}... Parent: {parent_span_id[:8] + '...' if parent_span_id else 'None'}")
 
         # Extract LLM fields using semantic conventions
         model = (
@@ -199,6 +196,9 @@ class NeatlogsSpanProcessor(SpanProcessor):
             status = "FAILURE"
             error_report = {"message": span.status.description, "type": "SpanError"}
 
+        # Use span_kind directly as node_type (lowercase for consistency)
+        node_type = span_kind.lower() if span_kind else "unknown"
+
         # Create LLMCallData
         call_data = LLMCallData(
             session_id=self.tracker.session_id,
@@ -207,8 +207,8 @@ class NeatlogsSpanProcessor(SpanProcessor):
             span_id=span_id,
             trace_id=trace_id,
             parent_span_id=parent_span_id,
-            node_type="llm_call",
-            node_name=model,
+            node_type=node_type,
+            node_name=span.name,
             model=model,
             provider=provider,
             framework=None,  # Hard to get from span unless added as attribute

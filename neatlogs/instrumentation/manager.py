@@ -19,8 +19,33 @@ def instrument_all():
     and initializes them if found.
     """
 
-    # OpenAI
-    if importlib.util.find_spec("openai"):
+    # OpenAI Agents
+    # The OpenAI Agents SDK is imported as 'agents'
+    # Check for OpenAI Agents first, as it uses OpenAI SDK internally
+    # We'll skip OpenAI instrumentation if Agents is present to avoid duplication
+    has_agents = importlib.util.find_spec("agents") is not None
+
+    if has_agents:
+        if importlib.util.find_spec("openinference.instrumentation.openai_agents"):
+            try:
+                from openinference.instrumentation.openai_agents import (
+                    OpenAIAgentsInstrumentor,
+                )
+
+                OpenAIAgentsInstrumentor().instrument()
+                logger.info("Neatlogs: OpenAI Agents instrumentation enabled.")
+                logger.info(
+                    "Neatlogs: Skipping OpenAI SDK instrumentation (covered by Agents instrumentation)"
+                )
+            except Exception as e:
+                logger.warning(f"Neatlogs: Failed to instrument OpenAI Agents: {e}")
+        else:
+            logger.warning(
+                "Neatlogs: Detected 'agents' but 'openinference-instrumentation-openai-agents' is not installed. "
+                "Install with: uv add neatlogs[openai-agents]"
+            )
+    # OpenAI - only instrument if OpenAI Agents is not present
+    elif importlib.util.find_spec("openai"):
         if importlib.util.find_spec("openinference.instrumentation.openai"):
             try:
                 from openinference.instrumentation.openai import OpenAIInstrumentor
@@ -33,25 +58,6 @@ def instrument_all():
             logger.warning(
                 "Neatlogs: Detected 'openai' but 'openinference-instrumentation-openai' is not installed. "
                 "Install with: uv add neatlogs[openai]"
-            )
-
-    # OpenAI Agents
-    # The OpenAI Agents SDK is imported as 'agents'
-    if importlib.util.find_spec("agents"):
-        if importlib.util.find_spec("openinference.instrumentation.openai_agents"):
-            try:
-                from openinference.instrumentation.openai_agents import (
-                    OpenAIAgentsInstrumentor,
-                )
-
-                OpenAIAgentsInstrumentor().instrument()
-                logger.info("Neatlogs: OpenAI Agents instrumentation enabled.")
-            except Exception as e:
-                logger.warning(f"Neatlogs: Failed to instrument OpenAI Agents: {e}")
-        else:
-            logger.warning(
-                "Neatlogs: Detected 'agents' but 'openinference-instrumentation-openai-agents' is not installed. "
-                "Install with: uv add neatlogs[openai-agents]"
             )
 
     # LangChain
