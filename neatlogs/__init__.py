@@ -6,7 +6,7 @@ A comprehensive LLM tracking system with OpenTelemetry and OpenInference support
 Automatically captures and logs all LLM API calls with detailed metrics.
 """
 
-from .core import get_tracker, LLMTracker
+from .new_core import get_tracker, LLMTracker
 import logging
 import atexit
 import threading

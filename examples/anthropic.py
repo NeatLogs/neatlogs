@@ -5,7 +5,6 @@ This example demonstrates how to use Neatlogs with Anthropic Claude API calls.
 Traces will be sent to the local dev server.
 """
 
-import os
 from neatlogs import init
 
 # Initialize neatlogs with debug mode and OpenTelemetry enabled
