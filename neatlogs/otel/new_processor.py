@@ -39,14 +39,16 @@ class NeatlogsSpanProcessor(SpanProcessor):
 
     def on_end(self, span: ReadableSpan) -> None:
         """Called when a span is ended."""
-        logger.debug(f"on_end called for span: {span.name if span else 'None'}")
+        logger.debug(
+            f"on_end called for span: {span.name if span else 'None'}")
         if not span:
             return
 
         attributes = span.attributes or {}
         span_kind = attributes.get("openinference.span.kind")
 
-        logger.debug(f"Processing span '{span.name}' with span_kind: {span_kind}")
+        logger.debug(
+            f"Processing span '{span.name}' with span_kind: {span_kind}")
 
         # Process all OpenInference spans (LLM, TOOL, AGENT, CHAIN, etc.)
         # Skip spans without openinference.span.kind as they're likely infrastructure spans
@@ -56,7 +58,6 @@ class NeatlogsSpanProcessor(SpanProcessor):
         try:
             self._process_span(span)
         except Exception as e:
-            print(f"DEBUG: Error processing span: {e}")
             logger.error(f"Neatlogs: Failed to process span {span.name}: {e}")
             logger.debug(traceback.format_exc())
 

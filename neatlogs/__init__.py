@@ -26,7 +26,7 @@ def init(
     tags: Optional[List[str]] = None,
     debug: bool = False,
     # OpenTelemetry options
-    enable_otel: bool = False,
+    enable_otel: bool = True,
     otlp_endpoint: Optional[str] = None,
     otlp_headers: Optional[Dict[str, str]] = None,
     otel_console_export: bool = False,

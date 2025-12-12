@@ -22,7 +22,6 @@ def instrument_all():
     # OpenAI Agents
     # The OpenAI Agents SDK is imported as 'agents'
     # Check for OpenAI Agents first, as it uses OpenAI SDK internally
-    # We'll skip OpenAI instrumentation if Agents is present to avoid duplication
     has_agents = importlib.util.find_spec("agents") is not None
 
     if has_agents:
@@ -34,18 +33,17 @@ def instrument_all():
 
                 OpenAIAgentsInstrumentor().instrument()
                 logger.info("Neatlogs: OpenAI Agents instrumentation enabled.")
-                logger.info(
-                    "Neatlogs: Skipping OpenAI SDK instrumentation (covered by Agents instrumentation)"
-                )
             except Exception as e:
-                logger.warning(f"Neatlogs: Failed to instrument OpenAI Agents: {e}")
+                logger.warning(
+                    f"Neatlogs: Failed to instrument OpenAI Agents: {e}")
         else:
             logger.warning(
                 "Neatlogs: Detected 'agents' but 'openinference-instrumentation-openai-agents' is not installed. "
                 "Install with: uv add neatlogs[openai-agents]"
             )
-    # OpenAI - only instrument if OpenAI Agents is not present
-    elif importlib.util.find_spec("openai"):
+
+    # OpenAI - instrument regardless of whether Agents is present (they can coexist)
+    if importlib.util.find_spec("openai"):
         if importlib.util.find_spec("openinference.instrumentation.openai"):
             try:
                 from openinference.instrumentation.openai import OpenAIInstrumentor
@@ -71,7 +69,8 @@ def instrument_all():
                 LangChainInstrumentor().instrument()
                 logger.info("Neatlogs: LangChain instrumentation enabled.")
             except Exception as e:
-                logger.warning(f"Neatlogs: Failed to instrument LangChain: {e}")
+                logger.warning(
+                    f"Neatlogs: Failed to instrument LangChain: {e}")
         else:
             logger.warning(
                 "Neatlogs: Detected 'langchain' but 'openinference-instrumentation-langchain' is not installed. "
@@ -89,7 +88,8 @@ def instrument_all():
                 AnthropicInstrumentor().instrument()
                 logger.info("Neatlogs: Anthropic instrumentation enabled.")
             except Exception as e:
-                logger.warning(f"Neatlogs: Failed to instrument Anthropic: {e}")
+                logger.warning(
+                    f"Neatlogs: Failed to instrument Anthropic: {e}")
         else:
             logger.warning(
                 "Neatlogs: Detected 'anthropic' but 'openinference-instrumentation-anthropic' is not installed. "
@@ -107,7 +107,8 @@ def instrument_all():
                 GoogleGenAIInstrumentor().instrument()
                 logger.info("Neatlogs: Google GenAI instrumentation enabled.")
             except Exception as e:
-                logger.warning(f"Neatlogs: Failed to instrument Google GenAI: {e}")
+                logger.warning(
+                    f"Neatlogs: Failed to instrument Google GenAI: {e}")
         else:
             logger.warning(
                 "Neatlogs: Detected 'google.genai' but 'openinference-instrumentation-google-genai' is not installed. "

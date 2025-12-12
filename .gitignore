@@ -41,3 +41,5 @@ Thumbs.db
 .env
 .venv
 docs
+neatlogs.jsonl
+logs/

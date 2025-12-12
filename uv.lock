@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.10"
 resolution-markers = [
     "python_full_version >= '3.14'",
@@ -1863,7 +1863,9 @@ name = "neatlogs"
 version = "1.1.7"
 source = { editable = "." }
 dependencies = [
+    { name = "openai-agents" },
     { name = "openinference-instrumentation" },
+    { name = "openinference-instrumentation-openai-agents" },
     { name = "openinference-semantic-conventions" },
     { name = "opentelemetry-api" },
     { name = "opentelemetry-exporter-otlp-proto-http" },
@@ -1903,6 +1905,8 @@ openai-agents = [
 [package.dev-dependencies]
 dev = [
     { name = "fastapi", extra = ["standard"] },
+    { name = "opentelemetry-proto" },
+    { name = "protobuf" },
     { name = "pytest" },
     { name = "pytest-mock" },
     { name = "respx" },
@@ -1915,6 +1919,7 @@ requires-dist = [
     { name = "langgraph", marker = "extra == 'langgraph'", specifier = ">=0.1.0" },
     { name = "litellm", marker = "extra == 'litellm'", specifier = ">=1.0.0" },
     { name = "openai", marker = "extra == 'openai'", specifier = ">=1.0.0" },
+    { name = "openai-agents", specifier = ">=0.6.2" },
     { name = "openai-agents", marker = "extra == 'openai-agents'", specifier = ">=0.1.0" },
     { name = "openinference-instrumentation", specifier = ">=0.1.27" },
     { name = "openinference-instrumentation-crewai", marker = "extra == 'crewai'", specifier = ">=0.1.0" },
@@ -1923,6 +1928,7 @@ requires-dist = [
     { name = "openinference-instrumentation-langchain", marker = "extra == 'langgraph'", specifier = ">=0.1.0" },
     { name = "openinference-instrumentation-litellm", marker = "extra == 'litellm'", specifier = ">=0.1.6" },
     { name = "openinference-instrumentation-openai", marker = "extra == 'openai'", specifier = ">=0.1.32" },
+    { name = "openinference-instrumentation-openai-agents", specifier = ">=1.4.0" },
     { name = "openinference-instrumentation-openai-agents", marker = "extra == 'openai-agents'", specifier = ">=0.1.0" },
     { name = "openinference-semantic-conventions", specifier = ">=0.1.13" },
     { name = "opentelemetry-api", specifier = ">=1.33.1" },
@@ -1935,6 +1941,8 @@ provides-extras = ["openai", "langchain", "litellm", "google-genai", "langgraph"
 [package.metadata.requires-dev]
 dev = [
     { name = "fastapi", extras = ["standard"], specifier = ">=0.124.0" },
+    { name = "opentelemetry-proto", specifier = ">=1.33.1" },
+    { name = "protobuf", specifier = ">=4.0.0" },
     { name = "pytest", specifier = ">=7.0.0" },
     { name = "pytest-mock", specifier = ">=3.10.0" },
     { name = "respx", specifier = ">=0.20.0" },

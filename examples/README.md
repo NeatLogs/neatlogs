@@ -4,9 +4,12 @@ This folder contains examples demonstrating how to use Neatlogs to track LLM API
 
 ## Available Examples
 
-- **usage.py** - Overview and quick reference
-- **usage_openai.py** - OpenAI integration example
-- **usage_anthropic.py** - Anthropic Claude integration example
+- **openai_sdk.py** - OpenAI SDK integration example
+- **azure_openai.py** - Azure OpenAI integration example
+- **azure_openai_agents.py** - Azure OpenAI Agents integration example
+- **google_genai.py** - Google Generative AI integration example
+- **anthropic.py** - Anthropic Claude integration example
+- **crewai.py** - CrewAI integration example
 
 ## Running the Examples
 
@@ -29,6 +32,15 @@ Set the API key for the provider you want to test:
 # For OpenAI examples
 export OPENAI_API_KEY='your-openai-key-here'
 
+# For Azure OpenAI examples
+export AZURE_OPENAI_API_KEY='your-azure-openai-key-here'
+export AZURE_OPENAI_ENDPOINT='your-azure-endpoint-here'
+export AZURE_OPENAI_API_VERSION='2024-08-01-preview'
+export AZURE_OPENAI_DEPLOYMENT_NAME='your-deployment-name-here'
+
+# For Google GenAI examples
+export GOOGLE_API_KEY='your-google-api-key-here'
+
 # For Anthropic examples
 export ANTHROPIC_API_KEY='your-anthropic-key-here'
 ```
@@ -42,9 +54,21 @@ Install the library for the provider you want to test:
 uv add openai
 # or: pip install openai
 
+# For Azure OpenAI (same as OpenAI)
+uv add openai
+# or: pip install openai
+
+# For Google GenAI
+uv add google-generativeai
+# or: pip install google-generativeai
+
 # For Anthropic
 uv add anthropic
 # or: pip install anthropic
+
+# For CrewAI
+uv add crewai
+# or: pip install crewai
 ```
 
 ### 4. Run the Example

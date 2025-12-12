@@ -20,14 +20,17 @@ from opentelemetry.sdk.trace import ReadableSpan
 import contextvars
 
 # Context variable for agentic framework
-_current_framework_ctx = contextvars.ContextVar("current_framework", default=None)
+_current_framework_ctx = contextvars.ContextVar(
+    "current_framework", default=None)
 
 # Context variable for parent span
-current_span_id_context = contextvars.ContextVar("current_span_id", default=None)
+current_span_id_context = contextvars.ContextVar(
+    "current_span_id", default=None)
 
 
 # Context variable to suppress low-level patching
-_suppress_patching_ctx = contextvars.ContextVar("suppress_patching", default=False)
+_suppress_patching_ctx = contextvars.ContextVar(
+    "suppress_patching", default=False)
 
 
 def set_current_framework(framework: str):
@@ -222,7 +225,8 @@ class LLMTracker:
             # Add Neatlogs Span Processor
             # This captures data for the Neatlogs backend
             if hasattr(self._tracer_provider, "add_span_processor"):
-                self._tracer_provider.add_span_processor(NeatlogsSpanProcessor(self))
+                self._tracer_provider.add_span_processor(
+                    NeatlogsSpanProcessor(self))
             else:
                 logging.warning(
                     "Neatlogs: Current TracerProvider does not support adding span processors. Neatlogs data capture may fail."
@@ -256,7 +260,8 @@ class LLMTracker:
             logging.info("Neatlogs: OpenTelemetry setup complete.")
 
         except ImportError as e:
-            logging.error(f"Neatlogs: Failed to import OpenTelemetry components: {e}")
+            logging.error(
+                f"Neatlogs: Failed to import OpenTelemetry components: {e}")
             self.enable_otel = False
         except Exception as e:
             logging.error(f"Neatlogs: Failed to configure OpenTelemetry: {e}")
@@ -306,7 +311,8 @@ class LLMTracker:
             except requests.exceptions.RequestException as e:
                 logging.error(f"Neatlogs: Error sending data to server: {e}")
             except Exception as e:
-                logging.error(f"Neatlogs: Unexpected error in background sender: {e}")
+                logging.error(
+                    f"Neatlogs: Unexpected error in background sender: {e}")
 
         # Run in background thread
         thread = threading.Thread(target=_send)
@@ -381,9 +387,11 @@ class LLMTracker:
         if self.enable_otel and self._tracer_provider:
             try:
                 self._tracer_provider.shutdown()
-                logging.debug("Neatlogs: OpenTelemetry tracer shutdown complete")
+                logging.debug(
+                    "Neatlogs: OpenTelemetry tracer shutdown complete")
             except Exception as e:
-                logging.debug(f"Neatlogs: Error shutting down OTel tracer: {e}")
+                logging.debug(
+                    f"Neatlogs: Error shutting down OTel tracer: {e}")
 
         logging.debug("Neatlogs: LLMTracker.shutdown() finished.")
 

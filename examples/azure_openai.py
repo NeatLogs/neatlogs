@@ -1,5 +1,5 @@
 """
-Neatlogs OpenAI Example
+Neatlogs Azure OpenAI Example
 ========================
 This example demonstrates how to use Neatlogs with OpenAI API calls.
 Traces will be written to a local file (neatlogs.jsonl).
@@ -60,6 +60,9 @@ except ImportError:
 
 except Exception as e:
     print(f"\n[ERROR] Error making OpenAI call: {e}")
-    print("  Make sure OPENAI_API_KEY is set in your environment:")
-    print("  export OPENAI_API_KEY='your-api-key-here'")
+    print("  Make sure AZURE_OPENAI_API_KEY is set in your environment:")
+    print("  export AZURE_OPENAI_API_KEY='your-api-key-here'")
+    print("  export AZURE_OPENAI_ENDPOINT='your-endpoint-here'")
+    print("  export AZURE_OPENAI_API_VERSION='your-api-version-here'")
+    print("  export AZURE_OPENAI_DEPLOYMENT_NAME='your-deployment-name-here'")
     print("=" * 60)
