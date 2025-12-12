@@ -19,14 +19,17 @@ from opentelemetry.trace import Span
 import contextvars
 
 # Context variable for agentic framework
-_current_framework_ctx = contextvars.ContextVar("current_framework", default=None)
+_current_framework_ctx = contextvars.ContextVar(
+    "current_framework", default=None)
 
 # Context variable for parent span
-current_span_id_context = contextvars.ContextVar("current_span_id", default=None)
+current_span_id_context = contextvars.ContextVar(
+    "current_span_id", default=None)
 
 
 # Context variable to suppress low-level patching
-_suppress_patching_ctx = contextvars.ContextVar("suppress_patching", default=False)
+_suppress_patching_ctx = contextvars.ContextVar(
+    "suppress_patching", default=False)
 
 
 def set_current_framework(framework: str):
@@ -218,6 +221,23 @@ class LLMTracker:
                     "Neatlogs: No global TracerProvider detected. Initializing new SDK TracerProvider."
                 )
 
+                from opentelemetry.sdk.trace.id_generator import IdGenerator, RandomIdGenerator
+
+                class SessionIdGenerator(IdGenerator):
+                    """An ID generator that reuses the first generated trace ID for all new traces."""
+
+                    def __init__(self):
+                        self._random_generator = RandomIdGenerator()
+                        self._session_trace_id: Optional[int] = None
+
+                    def generate_span_id(self) -> int:
+                        return self._random_generator.generate_span_id()
+
+                    def generate_trace_id(self) -> int:
+                        if self._session_trace_id is None:
+                            self._session_trace_id = self._random_generator.generate_trace_id()
+                        return self._session_trace_id
+
                 # Create Resource
                 resource = Resource.create(
                     {
@@ -229,8 +249,10 @@ class LLMTracker:
                     }
                 )
 
-                # Initialize new TracerProvider
-                self._tracer_provider = TracerProvider(resource=resource)
+                # Initialize new TracerProvider with our custom ID generator
+                self._tracer_provider = TracerProvider(
+                    resource=resource, id_generator=SessionIdGenerator()
+                )
 
                 # Set as global
                 trace.set_tracer_provider(self._tracer_provider)
@@ -243,7 +265,8 @@ class LLMTracker:
             # Add Neatlogs Span Processor
             # This captures data for the Neatlogs backend
             if hasattr(self._tracer_provider, "add_span_processor"):
-                self._tracer_provider.add_span_processor(NeatlogsSpanProcessor(self))
+                self._tracer_provider.add_span_processor(
+                    NeatlogsSpanProcessor(self))
             else:
                 logging.warning(
                     "Neatlogs: Current TracerProvider does not support adding span processors. Neatlogs data capture may fail."
@@ -277,7 +300,8 @@ class LLMTracker:
             logging.info("Neatlogs: OpenTelemetry setup complete.")
 
         except ImportError as e:
-            logging.error(f"Neatlogs: Failed to import OpenTelemetry components: {e}")
+            logging.error(
+                f"Neatlogs: Failed to import OpenTelemetry components: {e}")
             self.enable_otel = False
         except Exception as e:
             logging.error(f"Neatlogs: Failed to configure OpenTelemetry: {e}")
@@ -328,7 +352,8 @@ class LLMTracker:
             except requests.exceptions.RequestException as e:
                 logging.error(f"Neatlogs: Error sending data to server: {e}")
             except Exception as e:
-                logging.error(f"Neatlogs: Unexpected error in background sender: {e}")
+                logging.error(
+                    f"Neatlogs: Unexpected error in background sender: {e}")
 
         # Run in background thread
         thread = threading.Thread(target=_send)
@@ -403,9 +428,11 @@ class LLMTracker:
         if self.enable_otel and self._tracer_provider:
             try:
                 self._tracer_provider.shutdown()
-                logging.debug("Neatlogs: OpenTelemetry tracer shutdown complete")
+                logging.debug(
+                    "Neatlogs: OpenTelemetry tracer shutdown complete")
             except Exception as e:
-                logging.debug(f"Neatlogs: Error shutting down OTel tracer: {e}")
+                logging.debug(
+                    f"Neatlogs: Error shutting down OTel tracer: {e}")
 
         logging.debug("Neatlogs: LLMTracker.shutdown() finished.")
 
