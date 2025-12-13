@@ -12,6 +12,7 @@ import atexit
 import threading
 from typing import List, Optional, Dict
 
+
 __version__ = "1.1.7"
 __all__ = ["init", "get_tracker", "add_tags", "get_langchain_callback_handler"]
 

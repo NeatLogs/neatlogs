@@ -5,7 +5,10 @@ import os
 
 load_dotenv()
 
-neatlogs.init(api_key=os.getenv("NEATLOGS_API_KEY"), enable_otel=True)
+neatlogs.init(
+    api_key=os.getenv("NEATLOGS_API_KEY"),
+    tags=["v3", "crewai", "demo"]
+)
 
 # Create the Azure LLM instance using CrewAI's LLM class
 llm = LLM(

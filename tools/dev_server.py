@@ -9,7 +9,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-@app.post("/api/data/v2")
+@app.post("/api/data/v3")
 async def log_sink(request: Request):
     print(f"Request Received: {request}")
     data = await request.json()

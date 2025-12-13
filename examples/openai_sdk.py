@@ -47,11 +47,7 @@ try:
     print("\n" + "=" * 60)
 
     import time
-
-    # Wait for background threads to complete sending data
-    print("\nWaiting for data to be sent to server...")
-    time.sleep(5)  # Give background thread time to complete HTTP request
-
+    time.sleep(5)
 except ImportError:
     print("\n⚠ Error: OpenAI library not installed")
     print("  Install with: uv add openai")
