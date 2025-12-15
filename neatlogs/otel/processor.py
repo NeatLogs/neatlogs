@@ -2,242 +2,138 @@
 Neatlogs Span Processor
 =======================
 
-Implements an OpenTelemetry SpanProcessor that captures finished spans,
-extracts relevant LLM data, and sends it to the Neatlogs backend.
+Captures OpenTelemetry spans, serializes them safely,
+derives a stable externalTraceId, and sends them to Neatlogs backend.
 """
 
+import json
 import logging
 import traceback
+from datetime import datetime
 from typing import Optional
 
 from opentelemetry.sdk.trace import SpanProcessor, ReadableSpan
-from opentelemetry.trace import Span
 
-from ..core import LLMTracker, LLMCallData
-from ..semconv import LLMAttributes
+from ..new_core import LLMTracker, NewLLMCallData
 
 logger = logging.getLogger(__name__)
 
 
+def _hex(n: Optional[int], width: int) -> Optional[str]:
+    if n is None:
+        return None
+    return format(n, f"0{width}x")
+
+
+def serialize_span(span: ReadableSpan) -> dict:
+    """
+    Convert ReadableSpan -> JSON-serializable dict
+    (matches what server v3 expects)
+    """
+    ctx = span.context
+
+    attributes = {}
+    for k, v in (span.attributes or {}).items():
+        if isinstance(v, (str, int, float, bool, list, dict)) or v is None:
+            attributes[k] = v
+        else:
+            attributes[k] = str(v)
+
+    resource_attrs = {}
+    if span.resource:
+        for k, v in (span.resource.attributes or {}).items():
+            if isinstance(v, (str, int, float, bool, list, dict)) or v is None:
+                resource_attrs[k] = v
+            else:
+                resource_attrs[k] = str(v)
+
+    return {
+        "name": span.name,
+        "context": {
+            "trace_id": _hex(ctx.trace_id, 32),
+            "span_id": _hex(ctx.span_id, 16),
+        },
+        "parent_id": _hex(span.parent.span_id, 16) if span.parent else None,
+        "start_time": span.start_time,
+        "end_time": span.end_time,
+        "attributes": attributes,
+        "resource": {
+            "attributes": resource_attrs
+        },
+        "status": {
+            "status_code": span.status.status_code.name
+            if span.status else "UNSET"
+        },
+    }
+
+
+def choose_external_trace_id(serialized_span: dict) -> str:
+    """
+    Canonical trace grouping rule:
+    1. neatlogs.session_id
+    2. neatlogs.thread_id
+    3. OTEL trace_id (fallback)
+    """
+    res_attrs = serialized_span.get("resource", {}).get("attributes", {})
+
+    session_id = res_attrs.get("neatlogs.session_id")
+    if session_id:
+        return str(session_id)
+
+    thread_id = res_attrs.get("neatlogs.thread_id")
+    if thread_id:
+        return str(thread_id)
+
+    trace_id = serialized_span.get("context", {}).get("trace_id")
+    if trace_id:
+        return trace_id
+
+    # absolute fallback (should almost never happen)
+    from uuid import uuid4
+    return str(uuid4())
+
+
 class NeatlogsSpanProcessor(SpanProcessor):
-    """
-    Captures OpenTelemetry spans and reports them to the Neatlogs backend.
-
-    This processor listens for finished spans, identifies those containing
-    LLM-related attributes (based on OpenInference semantic conventions),
-    converts them into the standardized `LLMCallData` format, and dispatches
-    them via the `LLMTracker` for ingestion by the Neatlogs server.
-    """
-
     def __init__(self, tracker: LLMTracker):
         self.tracker = tracker
 
-    def on_start(self, span: Span, parent_context: Optional[object] = None) -> None:
-        """Called when a span is started."""
+    def on_start(self, span, parent_context=None):
         pass
 
     def on_end(self, span: ReadableSpan) -> None:
-        """Called when a span is ended."""
-        logger.debug(f"on_end called for span: {span.name if span else 'None'}")
         if not span:
             return
 
-        attributes = span.attributes or {}
-        span_kind = attributes.get("openinference.span.kind")
-
-        logger.debug(f"Processing span '{span.name}' with span_kind: {span_kind}")
-
-        # Process all OpenInference spans (LLM, TOOL, AGENT, CHAIN, etc.)
-        # Skip spans without openinference.span.kind as they're likely infrastructure spans
-        if not span_kind:
-            return
-
         try:
-            self._process_span(span)
+            attributes = span.attributes or {}
+            span_kind = attributes.get("openinference.span.kind")
+
+            # Ignore infra spans
+            if not span_kind:
+                return
+
+            serialized = serialize_span(span)
+            external_trace_id = choose_external_trace_id(serialized)
+
+            call_data = NewLLMCallData(
+                span=serialized,
+                trace_id=external_trace_id,
+                api_key=self.tracker.api_key,
+            )
+
+            if self.tracker.enable_server_sending and not self.tracker.dry_run:
+                self.tracker._enqueue_span(call_data)
+            elif self.tracker.dry_run:
+                logger.info(
+                    f"[Dry Run] Captured span for trace {external_trace_id}"
+                )
+
         except Exception as e:
-            print(f"DEBUG: Error processing span: {e}")
-            logger.error(f"Neatlogs: Failed to process span {span.name}: {e}")
+            logger.error(f"Neatlogs: Failed to process span: {e}")
             logger.debug(traceback.format_exc())
 
     def shutdown(self) -> None:
-        """Called when the tracer provider is shut down."""
         pass
 
     def force_flush(self, timeout_millis: int = 30000) -> bool:
-        """Called when the tracer provider is force flushed."""
         return True
-
-    def _process_span(self, span: ReadableSpan):
-        """Extract data from span and send to Neatlogs."""
-        attributes = span.attributes or {}
-        span_kind = attributes.get("openinference.span.kind", "unknown")
-
-        # Extract core fields
-        span_id = format(span.context.span_id, "016x")
-        trace_id = format(span.context.trace_id, "032x")
-
-        parent_span_id = format(span.parent.span_id, "016x") if span.parent else None
-
-        # Log hierarchy for debugging
-        logger.info(f"Span: {span.name} ({span_kind}) - ID: {span_id[:8]}... Parent: {parent_span_id[:8] + '...' if parent_span_id else 'None'}")
-
-        # Extract LLM fields using semantic conventions
-        model = (
-            attributes.get(LLMAttributes.LLM_REQUEST_MODEL)
-            or attributes.get(LLMAttributes.LLM_RESPONSE_MODEL)
-            or attributes.get("gen_ai.request.model")
-            or "unknown"
-        )
-
-        provider = (
-            attributes.get(LLMAttributes.LLM_SYSTEM)
-            or attributes.get("gen_ai.system")
-            or "unknown"
-        )
-
-        # Token usage
-        prompt_tokens = (
-            attributes.get(LLMAttributes.LLM_USAGE_PROMPT_TOKENS)
-            or attributes.get(LLMAttributes.GEN_AI_USAGE_INPUT_TOKENS)
-            or 0
-        )
-        completion_tokens = (
-            attributes.get(LLMAttributes.LLM_USAGE_COMPLETION_TOKENS)
-            or attributes.get(LLMAttributes.GEN_AI_USAGE_OUTPUT_TOKENS)
-            or 0
-        )
-        total_tokens = attributes.get(LLMAttributes.LLM_USAGE_TOTAL_TOKENS) or (
-            prompt_tokens + completion_tokens
-        )
-
-        # Cost
-        cost = attributes.get(LLMAttributes.LLM_COST_TOTAL) or 0.0
-
-        # Messages (Input)
-        messages = []
-
-        # 1. Try to get messages from standard OpenInference attributes (llm.input_messages.x.message.content)
-        # This requires iterating through indexed attributes which is tricky with flat dict.
-        # However, OpenInference usually populates `input.value` as a fallback or primary for some providers.
-
-        # 2. Try to parse `input.value` if it's JSON
-        input_value = attributes.get("input.value")
-        input_mime_type = attributes.get("input.mime_type")
-
-        if input_value:
-            import json
-
-            try:
-                if input_mime_type == "application/json":
-                    input_data = json.loads(input_value)
-                    # Handle Google GenAI format: {"contents": [{"role": "user", "parts": [{"text": "..."}]}]}
-                    if isinstance(input_data, dict):
-                        if "contents" in input_data:
-                            for content in input_data["contents"]:
-                                role = content.get("role", "user")
-                                parts = content.get("parts", [])
-                                text = ""
-                                for part in parts:
-                                    if isinstance(part, dict) and "text" in part:
-                                        text += part["text"]
-                                messages.append({"role": role, "content": text})
-                        # Handle OpenAI format: {"messages": [{"role": "user", "content": "..."}]}
-                        elif "messages" in input_data:
-                            messages = input_data["messages"]
-                        # Handle simple dict if it looks like a message
-                        elif "role" in input_data and "content" in input_data:
-                            messages.append(input_data)
-                else:
-                    # Treat as raw string input
-                    messages.append({"role": "user", "content": str(input_value)})
-            except Exception:
-                # Fallback: just use raw value
-                messages.append({"role": "user", "content": str(input_value)})
-
-        completion = (
-            attributes.get("llm.output_messages.0.message.content")
-            or attributes.get("output.value")  # Fallback to output.value
-            or attributes.get("gen_ai.output.messages")
-            or ""
-        )
-
-        # If completion is still empty but we have output.value as JSON, try to parse it
-        if (
-            not completion
-            and attributes.get("output.value")
-            and attributes.get("output.mime_type") == "application/json"
-        ):
-            import json
-
-            try:
-                output_data = json.loads(attributes.get("output.value"))
-                # Google GenAI response format
-                if isinstance(output_data, dict) and "candidates" in output_data:
-                    candidates = output_data["candidates"]
-                    if candidates and len(candidates) > 0:
-                        parts = candidates[0].get("content", {}).get("parts", [])
-                        text = ""
-                        for part in parts:
-                            if isinstance(part, dict) and "text" in part:
-                                text += part["text"]
-                        completion = text
-            except Exception:
-                pass
-
-        # Timestamps
-        start_time = span.start_time / 1e9  # nanoseconds to seconds
-        end_time = span.end_time / 1e9
-        duration = end_time - start_time
-
-        # Status
-        status = "SUCCESS"
-        error_report = None
-        if not span.status.is_ok and span.status.description:
-            status = "FAILURE"
-            error_report = {"message": span.status.description, "type": "SpanError"}
-
-        # Use span_kind directly as node_type (lowercase for consistency)
-        node_type = span_kind.lower() if span_kind else "unknown"
-
-        # Create LLMCallData
-        call_data = LLMCallData(
-            session_id=self.tracker.session_id,
-            agent_id=self.tracker.agent_id,
-            thread_id=self.tracker.thread_id,  # Or use trace_id if we want to align
-            span_id=span_id,
-            trace_id=trace_id,
-            parent_span_id=parent_span_id,
-            node_type=node_type,
-            node_name=span.name,
-            model=model,
-            provider=provider,
-            framework=None,  # Hard to get from span unless added as attribute
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            total_tokens=total_tokens,
-            cost=cost,
-            messages=messages,  # We need a robust way to get this
-            completion=str(completion),
-            timestamp=None,  # Will be set in LLMCallData
-            start_time=start_time,
-            end_time=end_time,
-            duration=duration,
-            tags=self.tracker.tags,
-            error_report=error_report,
-            status=status,
-            api_key=self.tracker.api_key,
-        )
-
-        # Send to server
-        if self.tracker.enable_server_sending and not self.tracker.dry_run:
-            self.tracker._send_data_to_server(call_data)
-        elif self.tracker.dry_run:
-            msg = (
-                f"Neatlogs [Dry Run]: Processed span {span_id} for {model}. "
-                f"Input Messages: {len(messages)}, Completion Length: {len(str(completion))}"
-            )
-            print(msg)  # Ensure visibility
-            logger.info(msg)
-            if messages:
-                print(f"Neatlogs [Dry Run] Messages: {messages}")
-                logger.debug(f"Neatlogs [Dry Run] Messages: {messages}")

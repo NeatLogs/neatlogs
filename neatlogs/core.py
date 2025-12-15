@@ -7,6 +7,7 @@ and OpenInference integration for standardized observability.
 
 import os
 import json
+import queue
 import threading
 import logging
 from uuid import uuid4
@@ -15,18 +16,22 @@ from typing import Dict, List, Optional
 from dataclasses import dataclass, asdict
 import requests
 from opentelemetry.trace import Span
+from opentelemetry.sdk.trace import ReadableSpan
 
 import contextvars
 
 # Context variable for agentic framework
-_current_framework_ctx = contextvars.ContextVar("current_framework", default=None)
+_current_framework_ctx = contextvars.ContextVar(
+    "current_framework", default=None)
 
 # Context variable for parent span
-current_span_id_context = contextvars.ContextVar("current_span_id", default=None)
+current_span_id_context = contextvars.ContextVar(
+    "current_span_id", default=None)
 
 
 # Context variable to suppress low-level patching
-_suppress_patching_ctx = contextvars.ContextVar("suppress_patching", default=False)
+_suppress_patching_ctx = contextvars.ContextVar(
+    "suppress_patching", default=False)
 
 
 def set_current_framework(framework: str):
@@ -80,34 +85,16 @@ def clear_active_langgraph_node_span():
     _active_langgraph_node_span_ctx.set(None)
 
 
+# Sentinel object for queue lifecycle management
+_STOP = object()
+
+
 @dataclass
-class LLMCallData:
+class NewLLMCallData:
     """Data structure for LLM call information"""
 
-    session_id: str
-    agent_id: str
-    thread_id: str
-    span_id: str
     trace_id: str
-    parent_span_id: Optional[str]
-    node_type: str
-    node_name: str
-    model: str
-    provider: str
-    framework: Optional[str]
-    prompt_tokens: int
-    completion_tokens: int
-    total_tokens: int
-    cost: float
-    messages: List[Dict]
-    completion: str
-    timestamp: str
-    start_time: float
-    end_time: float
-    duration: float
-    tags: List[str]
-    error_report: Optional[Dict] = None
-    status: str = "SUCCESS"
+    span: dict
     api_key: Optional[str] = None
 
 
@@ -163,6 +150,14 @@ class LLMTracker:
             self.enable_otel = enable_otel
 
         self._threads = []
+
+        # Queue-based sender setup
+        self._send_queue = queue.Queue()
+        self._sender_thread = threading.Thread(
+            target=self._send_worker, daemon=True
+        )
+        self._sender_thread.start()
+
         self.setup_logging()
         self._lock = threading.Lock()
 
@@ -231,6 +226,7 @@ class LLMTracker:
 
                 # Initialize new TracerProvider
                 self._tracer_provider = TracerProvider(resource=resource)
+                self._owns_tracer_provider = True
 
                 # Set as global
                 trace.set_tracer_provider(self._tracer_provider)
@@ -239,11 +235,13 @@ class LLMTracker:
                     "Neatlogs: Detected existing global TracerProvider. Attaching to it."
                 )
                 self._tracer_provider = current_provider
+                self._owns_tracer_provider = False
 
             # Add Neatlogs Span Processor
             # This captures data for the Neatlogs backend
             if hasattr(self._tracer_provider, "add_span_processor"):
-                self._tracer_provider.add_span_processor(NeatlogsSpanProcessor(self))
+                self._tracer_provider.add_span_processor(
+                    NeatlogsSpanProcessor(self))
             else:
                 logging.warning(
                     "Neatlogs: Current TracerProvider does not support adding span processors. Neatlogs data capture may fail."
@@ -277,64 +275,57 @@ class LLMTracker:
             logging.info("Neatlogs: OpenTelemetry setup complete.")
 
         except ImportError as e:
-            logging.error(f"Neatlogs: Failed to import OpenTelemetry components: {e}")
+            logging.error(
+                f"Neatlogs: Failed to import OpenTelemetry components: {e}")
             self.enable_otel = False
         except Exception as e:
             logging.error(f"Neatlogs: Failed to configure OpenTelemetry: {e}")
             self.enable_otel = False
 
-    def _send_data_to_server(self, data: LLMCallData):
-        """
-        Send captured data to the Neatlogs server.
-
-        This method handles the asynchronous transmission of LLM call data
-        to the Neatlogs backend. It runs in a background thread to avoid
-        blocking the main application execution.
-
-        Args:
-            data (LLMCallData): The LLM call data to send.
-        """
+    def _send_to_server_sync(self, data: NewLLMCallData):
         if not self.enable_server_sending:
             return
 
-        def _send():
+        try:
+            url = os.getenv(
+                "NEATLOGS_API_URL",
+                "https://app.neatlogs.com/api/data/v3"
+            )
+
+            payload = {
+                "projectAPIKey": data.api_key or self.api_key,
+                "externalTraceId": data.trace_id,
+                "dataDump": json.dumps(data.span),
+                "timestamp": datetime.now().timestamp(),
+            }
+
+            response = requests.post(
+                url,
+                json=payload,
+                headers={"Content-Type": "application/json"},
+                timeout=5.0,
+            )
+            response.raise_for_status()
+
+        except Exception as e:
+            logging.error(f"Neatlogs: Failed to send span: {e}")
+
+    def _enqueue_span(self, call_data: NewLLMCallData):
+        self._send_queue.put(call_data)
+
+    def _send_worker(self):
+        while True:
+            item = self._send_queue.get()
+            if item is _STOP:
+                self._send_queue.task_done()
+                break
+
             try:
-                url = os.getenv(
-                    "NEATLOGS_API_URL", "https://app.neatlogs.com/api/data/v2"
-                )
-                headers = {"Content-Type": "application/json"}
-
-                # Prepare payload matching the server's expected format
-                trace_data = asdict(data)
-                payload = {
-                    "dataDump": json.dumps(trace_data),
-                    "projectAPIKey": data.api_key or self.api_key,
-                    "externalTraceId": data.trace_id,
-                    "timestamp": datetime.now().timestamp(),
-                }
-
-                logging.debug(f"Neatlogs: Sending data to server at {url}")
-
-                # Use a short timeout to prevent hanging
-                response = requests.post(
-                    url, json=payload, headers=headers, timeout=10.0
-                )
-                response.raise_for_status()
-
-                logging.debug(
-                    f"Neatlogs: Successfully sent data to server, status: {response.status_code}"
-                )
-
-            except requests.exceptions.RequestException as e:
-                logging.error(f"Neatlogs: Error sending data to server: {e}")
+                self._send_to_server_sync(item)
             except Exception as e:
-                logging.error(f"Neatlogs: Unexpected error in background sender: {e}")
-
-        # Run in background thread
-        thread = threading.Thread(target=_send)
-        thread.daemon = True
-        thread.start()
-        self._threads.append(thread)
+                logging.error(f"Neatlogs sender worker error: {e}")
+            finally:
+                self._send_queue.task_done()
 
     def setup_logging(self):
         """
@@ -355,7 +346,7 @@ class LLMTracker:
         # Based on previous code, it just set level and cleared handlers.
         # We'll stick to that but ensure it's clean.
 
-    def log_llm_call(self, call_data: LLMCallData):
+    def log_llm_call(self, call_data: NewLLMCallData):
         """
         Log LLM call data to file and trigger server sending.
 
@@ -368,7 +359,7 @@ class LLMTracker:
 
         # Send to server
         if self.enable_server_sending:
-            self._send_data_to_server(call_data)
+            self._enqueue_span(call_data)
 
     def add_tags(self, tags: List[str]):
         """Add tags to the tracker."""
@@ -385,27 +376,31 @@ class LLMTracker:
         This method ensures that all pending data is sent to the Neatlogs server
         and that the OpenTelemetry tracer provider is properly shut down (if owned).
         """
-        logging.debug(
-            f"Neatlogs: LLMTracker.shutdown() called. Waiting for {len(self._threads)} sender threads to complete."
-        )
+        logging.debug("Neatlogs: shutdown initiated")
 
-        # Wait for sender threads
-        for thread in self._threads:
-            thread.join(timeout=5.0)
+        # Signal worker to stop
+        self._send_queue.put(_STOP)
+
+        # Wait until all queued spans are sent
+        self._send_queue.join()
+
+        # Wait for worker thread
+        if self._sender_thread.is_alive():
+            self._sender_thread.join(timeout=5)
+
+        logging.debug("Neatlogs: shutdown completed")
 
         # Shutdown OpenTelemetry tracer to flush pending spans
-        # We only shutdown if we have a reference to the provider.
-        # Ideally, we should only shutdown if we created it, but for now,
-        # we'll assume if we have it, we can at least try to force flush or shutdown.
-        # If we attached to a global one, shutting it down might affect other things,
-        # but usually neatlogs is the main entry point.
-        # To be safe, let's just try to shutdown and catch errors.
-        if self.enable_otel and self._tracer_provider:
+        # We only shutdown if we own the TracerProvider (i.e., we created it).
+        # If we attached to an existing global one, we don't shutdown it.
+        if self.enable_otel and self._tracer_provider and self._owns_tracer_provider:
             try:
                 self._tracer_provider.shutdown()
-                logging.debug("Neatlogs: OpenTelemetry tracer shutdown complete")
+                logging.debug(
+                    "Neatlogs: OpenTelemetry tracer shutdown complete")
             except Exception as e:
-                logging.debug(f"Neatlogs: Error shutting down OTel tracer: {e}")
+                logging.debug(
+                    f"Neatlogs: Error shutting down OTel tracer: {e}")
 
         logging.debug("Neatlogs: LLMTracker.shutdown() finished.")
 
