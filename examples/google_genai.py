@@ -10,8 +10,7 @@ import os
 
 # Initialize neatlogs to write traces to a local file.
 neatlogs.init(
-    api_key="test-key",
-    tags=["google-genai", "demo"]
+    api_key="test-key", tags=["google-genai", "demo"], instrumentations=["google-genai"]
 )
 
 print("=" * 60)
@@ -24,15 +23,14 @@ try:
     print("\nMaking Google GenAI API call...")
 
     # Initialize the GenAI client with API key from environment
-    client = genai.Client(api_key=os.getenv('GEMINI_API_KEY'))
+    client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
     # Make a simple content generation request
     response = client.models.generate_content(
         model="gemini-2.5-flash",  # or "gemini-1.5-flash"
-        contents=[{
-            "role": "user",
-            "parts": [{"text": "Say hello in 5 words or less"}]
-        }]
+        contents=[
+            {"role": "user", "parts": [{"text": "Say hello in 5 words or less"}]}
+        ],
     )
 
     print(f"\nResponse: {response.text}")

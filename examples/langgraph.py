@@ -1,6 +1,7 @@
 # agentic_rag.py
 
 from dotenv import load_dotenv
+
 # Correct the imports
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
@@ -11,14 +12,16 @@ import os
 
 load_dotenv()
 
-neatlogs.init(api_key=os.getenv("NEATLOGS_API_KEY"))
+neatlogs.init(
+    api_key=os.getenv("NEATLOGS_API_KEY"), instrumentations=["langchain", "openai"]
+)
 
 # Create a ChatOpenAI model
 model = AzureChatOpenAI(
     api_key=os.environ["AZURE_OPENAI_API_KEY"],
     api_version=os.environ["AZURE_OPENAI_API_VERSION"],
     azure_endpoint=os.environ["AZURE_OPENAI_ENDPOINT"],
-    azure_deployment=os.environ["AZURE_OPENAI_DEPLOYMENT_NAME"]
+    azure_deployment=os.environ["AZURE_OPENAI_DEPLOYMENT_NAME"],
 )
 
 # Define prompt template
@@ -78,7 +81,9 @@ chain = (
     | model
     | StrOutputParser()
     | RunnableParallel(branches={"pros": pros_branch_chain, "cons": cons_branch_chain})
-    | RunnableLambda(lambda x: combine_pros_cons(x["branches"]["pros"], x["branches"]["cons"]))
+    | RunnableLambda(
+        lambda x: combine_pros_cons(x["branches"]["pros"], x["branches"]["cons"])
+    )
 )
 
 # Run the chain

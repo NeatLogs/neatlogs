@@ -12,12 +12,14 @@ import neatlogs
 load_dotenv()
 neatlogs.init(
     api_key=os.getenv("NEATLOGS_API_KEY"),
-    tags=["v3", "azure-openai", "demo"]
+    tags=["v3", "azure-openai", "demo"],
+    instrumentations=["openai"],
 )
 
 # Initialize Azure OpenAI client if available
 try:
     from openai import AzureOpenAI
+
     client = AzureOpenAI(
         api_key=os.getenv("AZURE_OPENAI_API_KEY"),
         api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
@@ -71,16 +73,16 @@ class ChatBot:
                     continue
 
                 # Handle commands
-                if user_input.lower() in ['quit', 'q', 'exit']:
+                if user_input.lower() in ["quit", "q", "exit"]:
                     break
-                elif user_input.lower() in ['help', 'h']:
+                elif user_input.lower() in ["help", "h"]:
                     print("Commands: quit, clear, history")
                     continue
-                elif user_input.lower() == 'clear':
+                elif user_input.lower() == "clear":
                     self.history.clear()
                     print("History cleared.")
                     continue
-                elif user_input.lower() in ['history', 'h']:
+                elif user_input.lower() in ["history", "h"]:
                     if not self.history:
                         print("No history yet.")
                     else:

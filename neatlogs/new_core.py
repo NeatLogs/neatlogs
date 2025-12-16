@@ -21,17 +21,14 @@ from opentelemetry.sdk.trace import ReadableSpan
 import contextvars
 
 # Context variable for agentic framework
-_current_framework_ctx = contextvars.ContextVar(
-    "current_framework", default=None)
+_current_framework_ctx = contextvars.ContextVar("current_framework", default=None)
 
 # Context variable for parent span
-current_span_id_context = contextvars.ContextVar(
-    "current_span_id", default=None)
+current_span_id_context = contextvars.ContextVar("current_span_id", default=None)
 
 
 # Context variable to suppress low-level patching
-_suppress_patching_ctx = contextvars.ContextVar(
-    "suppress_patching", default=False)
+_suppress_patching_ctx = contextvars.ContextVar("suppress_patching", default=False)
 
 
 def set_current_framework(framework: str):
@@ -153,9 +150,7 @@ class LLMTracker:
 
         # Queue-based sender setup
         self._send_queue = queue.Queue()
-        self._sender_thread = threading.Thread(
-            target=self._send_worker, daemon=True
-        )
+        self._sender_thread = threading.Thread(target=self._send_worker, daemon=True)
         self._sender_thread.start()
 
         self.setup_logging()
@@ -172,8 +167,6 @@ class LLMTracker:
             f"LLMTracker initialized - Session: {self.session_id}, "
             f"Agent: {self.agent_id}, Thread: {self.thread_id}, OTel: {self.enable_otel}, DryRun: {self.dry_run}"
         )
-        
-    
 
     def _setup_otel(
         self,
@@ -242,8 +235,7 @@ class LLMTracker:
             # Add Neatlogs Span Processor
             # This captures data for the Neatlogs backend
             if hasattr(self._tracer_provider, "add_span_processor"):
-                self._tracer_provider.add_span_processor(
-                    NeatlogsSpanProcessor(self))
+                self._tracer_provider.add_span_processor(NeatlogsSpanProcessor(self))
             else:
                 logging.warning(
                     "Neatlogs: Current TracerProvider does not support adding span processors. Neatlogs data capture may fail."
@@ -277,8 +269,7 @@ class LLMTracker:
             logging.info("Neatlogs: OpenTelemetry setup complete.")
 
         except ImportError as e:
-            logging.error(
-                f"Neatlogs: Failed to import OpenTelemetry components: {e}")
+            logging.error(f"Neatlogs: Failed to import OpenTelemetry components: {e}")
             self.enable_otel = False
         except Exception as e:
             logging.error(f"Neatlogs: Failed to configure OpenTelemetry: {e}")
@@ -289,15 +280,12 @@ class LLMTracker:
             return
 
         try:
-            url = os.getenv(
-                "NEATLOGS_API_URL",
-                "https://app.neatlogs.com/api/data/v3"
-            )
+            url = os.getenv("NEATLOGS_API_URL", "https://app.neatlogs.com/api/data/v3")
 
             payload = {
                 "projectAPIKey": data.api_key or self.api_key,
                 "externalTraceId": data.trace_id,
-                "dataDump": json.dumps(data.span),
+                "dataDump": data.span,
                 "timestamp": datetime.now().timestamp(),
             }
 
@@ -398,11 +386,9 @@ class LLMTracker:
         if self.enable_otel and self._tracer_provider and self._owns_tracer_provider:
             try:
                 self._tracer_provider.shutdown()
-                logging.debug(
-                    "Neatlogs: OpenTelemetry tracer shutdown complete")
+                logging.debug("Neatlogs: OpenTelemetry tracer shutdown complete")
             except Exception as e:
-                logging.debug(
-                    f"Neatlogs: Error shutting down OTel tracer: {e}")
+                logging.debug(f"Neatlogs: Error shutting down OTel tracer: {e}")
 
         logging.debug("Neatlogs: LLMTracker.shutdown() finished.")
 

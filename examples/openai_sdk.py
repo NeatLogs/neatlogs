@@ -10,9 +10,7 @@ import os
 
 # Initialize neatlogs to write traces to a local file.
 # dry_run=True prevents data from being sent to the remote server.
-neatlogs.init(
-    api_key="test-key",
-)
+neatlogs.init(api_key="test-key", instrumentations=["openai"])
 
 print("=" * 60)
 print("Neatlogs OpenAI Example")
@@ -47,7 +45,9 @@ try:
     print("\n" + "=" * 60)
 
     import time
+
     time.sleep(5)
+
 except ImportError:
     print("\n⚠ Error: OpenAI library not installed")
     print("  Install with: uv add openai")

@@ -32,6 +32,7 @@ def init(
     otlp_headers: Optional[Dict[str, str]] = None,
     otel_console_export: bool = False,
     dry_run: bool = False,
+    instrumentations: Optional[List[str]] = None,
 ):
     """
     Initialize the Neatlogs tracking system with optional OpenTelemetry support.
@@ -47,6 +48,10 @@ def init(
         otel_console_export (bool): Enable console export for debugging OTel spans.
         dry_run (bool): If True, disables sending data to Neatlogs server and enables console logging.
                         Useful for local testing and debugging. Defaults to False.
+        instrumentations (List[str], optional): List of frameworks to instrument.
+                                                If None, all available supported frameworks are instrumented.
+                                                Supported: "openai", "openai-agents", "langchain", "anthropic",
+                                                "google-genai", "crewai", "groq", "litellm".
 
     Returns:
         LLMTracker: The initialized tracker instance.
@@ -92,7 +97,7 @@ def init(
             )
             from .instrumentation import manager
 
-            manager.instrument_all()
+            manager.instrument_all(instrumentations=instrumentations)
 
             # Log initialization info
             logging.info("🚀 Neatlogs Tracker initialized successfully!")

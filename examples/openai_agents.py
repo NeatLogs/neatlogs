@@ -7,7 +7,12 @@ This example demonstrates a flow with tool usage to generate multiple spans.
 from neatlogs import init
 
 # Initialize neatlogs
-init(api_key="test-key", debug=True, enable_otel=True)
+init(
+    api_key="test-key",
+    debug=True,
+    enable_otel=True,
+    instrumentations=["openai-agents"],
+)
 
 print("=" * 60)
 print("Neatlogs OpenAI Agents SDK Example")

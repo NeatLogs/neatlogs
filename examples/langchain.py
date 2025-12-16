@@ -9,8 +9,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-neatlogs.init(api_key=os.getenv("NEATLOGS_API_KEY"),
-              tags=['customer_support', 'langgraph'])
+neatlogs.init(
+    api_key=os.getenv("NEATLOGS_API_KEY"),
+    tags=["customer_support", "langgraph"],
+    instrumentations=["langchain", "openai"],
+)
 
 llm = AzureChatOpenAI(
     api_key=os.getenv("AZURE_OPENAI_API_KEY"),
@@ -81,7 +84,9 @@ def handle_general(state: State) -> State:
 
 def escalate(state: State) -> State:
     """Escalate the query to a human agent due to negative sentiment."""
-    return {"response": "This query has been escalated to a human agent due to its negative sentiment."}
+    return {
+        "response": "This query has been escalated to a human agent due to its negative sentiment."
+    }
 
 
 def route_query(state: State) -> str:
@@ -116,8 +121,8 @@ workflow.add_conditional_edges(
         "handle_technical": "handle_technical",
         "handle_billing": "handle_billing",
         "handle_general": "handle_general",
-        "escalate": "escalate"
-    }
+        "escalate": "escalate",
+    },
 )
 workflow.add_edge("handle_technical", END)
 workflow.add_edge("handle_billing", END)
@@ -144,8 +149,9 @@ def run_customer_support(query: str) -> Dict[str, str]:
     return {
         "category": results["category"],
         "sentiment": results["sentiment"],
-        "response": results["response"]
+        "response": results["response"],
     }
+
 
 # escalate
 

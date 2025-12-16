@@ -8,7 +8,7 @@ Traces will be sent to the local dev server.
 from neatlogs import init
 
 # Initialize neatlogs with debug mode and OpenTelemetry enabled
-init(api_key="test-key", debug=True, enable_otel=True)
+init(api_key="test-key", debug=True, enable_otel=True, instrumentations=["anthropic"])
 
 print("=" * 60)
 print("Neatlogs Anthropic Example")
