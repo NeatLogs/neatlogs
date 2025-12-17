@@ -6,7 +6,7 @@ A comprehensive LLM tracking system with OpenTelemetry and OpenInference support
 Automatically captures and logs all LLM API calls with detailed metrics.
 """
 
-from .new_core import get_tracker, LLMTracker
+from .core import get_tracker, LLMTracker
 import logging
 import atexit
 import threading
@@ -14,7 +14,7 @@ from typing import List, Optional, Dict
 
 
 __version__ = "1.1.7"
-__all__ = ["init", "get_tracker", "add_tags", "get_langchain_callback_handler"]
+__all__ = ["init", "get_tracker", "add_tags"]
 
 # --- Global Tracker Instance and Initialization ---
 
@@ -50,8 +50,7 @@ def init(
                         Useful for local testing and debugging. Defaults to False.
         instrumentations (List[str], optional): List of frameworks to instrument.
                                                 If None, all available supported frameworks are instrumented.
-                                                Supported: "openai", "openai-agents", "langchain", "anthropic",
-                                                "google-genai", "crewai", "groq", "litellm".
+                                                Supported: "openai", "openai-agents", "anthropic", "google-genai", "crewai", "groq", "litellm", "llama-index", "google-adk", "agno", "bedrock", "dspy", "guardrails", "haystack", "instructor", "mcp", "mistralai", "portkey", "pydantic-ai", "smolagents", "vertexai", "autogen-agentchat".
 
     Returns:
         LLMTracker: The initialized tracker instance.
@@ -114,30 +113,6 @@ def init(
                 logging.info("   🧪 Dry Run: Enabled (No data sent to server)")
 
     return _global_tracker
-
-
-def get_langchain_callback_handler(
-    api_key: Optional[str] = None, tags: Optional[List[str]] = None
-):
-    """
-    Get the LangChain callback handler for Neatlogs tracking.
-
-
-    This function lazily imports the callback handler to avoid triggering
-    framework detection when it's not needed.
-
-    Args:
-        api_key (str, optional): API key for the tracker.
-        tags (List[str], optional): Tags to associate with the tracking session.
-
-    Returns:
-        NeatlogsLangchainCallbackHandler: The callback handler instance.
-    """
-    from .integration.callbacks.langchain.callback import (
-        NeatlogsLangchainCallbackHandler,
-    )
-
-    return NeatlogsLangchainCallbackHandler(api_key=api_key, tags=tags)
 
 
 def add_tags(tags: List[str]):

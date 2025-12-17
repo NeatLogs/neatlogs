@@ -6,7 +6,6 @@ and OpenInference integration for standardized observability.
 """
 
 import os
-import json
 import queue
 import threading
 import logging
@@ -16,73 +15,11 @@ from typing import Dict, List, Optional
 from dataclasses import dataclass, asdict
 import requests
 from opentelemetry.trace import Span
-from opentelemetry.sdk.trace import ReadableSpan
 
 import contextvars
 
-# Context variable for agentic framework
-_current_framework_ctx = contextvars.ContextVar(
-    "current_framework", default=None)
-
-# Context variable for parent span
 current_span_id_context = contextvars.ContextVar(
     "current_span_id", default=None)
-
-
-# Context variable to suppress low-level patching
-_suppress_patching_ctx = contextvars.ContextVar(
-    "suppress_patching", default=False)
-
-
-def set_current_framework(framework: str):
-    """Set the current framework context for the current async task."""
-    _current_framework_ctx.set(framework)
-
-
-def get_current_framework() -> Optional[str]:
-    """Get the current framework from the current async task."""
-    return _current_framework_ctx.get()
-
-
-def clear_current_framework():
-    """Clear the current framework context."""
-    _current_framework_ctx.set(None)
-
-
-def suppress_patching():
-    """Sets a flag to suppress low-level patching for the current async task."""
-    _suppress_patching_ctx.set(True)
-
-
-def release_patching():
-    """Releases the suppression flag for low-level patching."""
-    _suppress_patching_ctx.set(False)
-
-
-def is_patching_suppressed() -> bool:
-    """Checks if low-level patching is currently suppressed."""
-    return _suppress_patching_ctx.get()
-
-
-# Context variable for passing LangGraph node spans to provider handlers
-_active_langgraph_node_span_ctx = contextvars.ContextVar(
-    "active_langgraph_node_span", default=None
-)
-
-
-def set_active_langgraph_node_span(span: Span):
-    """Set the active LangGraph node span in the current context."""
-    _active_langgraph_node_span_ctx.set(span)
-
-
-def get_active_langgraph_node_span() -> Optional[Span]:
-    """Get the active LangGraph node span from the current context."""
-    return _active_langgraph_node_span_ctx.get()
-
-
-def clear_active_langgraph_node_span():
-    """Clear the active LangGraph node span from the current context."""
-    _active_langgraph_node_span_ctx.set(None)
 
 
 # Sentinel object for queue lifecycle management
@@ -90,7 +27,7 @@ _STOP = object()
 
 
 @dataclass
-class NewLLMCallData:
+class LLMCallData:
     """Data structure for LLM call information"""
 
     trace_id: str
@@ -154,8 +91,7 @@ class LLMTracker:
         # Queue-based sender setup
         self._send_queue = queue.Queue()
         self._sender_thread = threading.Thread(
-            target=self._send_worker, daemon=True
-        )
+            target=self._send_worker, daemon=True)
         self._sender_thread.start()
 
         self.setup_logging()
@@ -282,20 +218,18 @@ class LLMTracker:
             logging.error(f"Neatlogs: Failed to configure OpenTelemetry: {e}")
             self.enable_otel = False
 
-    def _send_to_server_sync(self, data: NewLLMCallData):
+    def _send_to_server_sync(self, data: LLMCallData):
         if not self.enable_server_sending:
             return
 
         try:
-            url = os.getenv(
-                "NEATLOGS_API_URL",
-                "https://app.neatlogs.com/api/data/v3"
-            )
+            url = os.getenv("NEATLOGS_API_URL",
+                            "https://app.neatlogs.com/api/data/v3")
 
             payload = {
                 "projectAPIKey": data.api_key or self.api_key,
                 "externalTraceId": data.trace_id,
-                "dataDump": json.dumps(data.span),
+                "dataDump": data.span,
                 "timestamp": datetime.now().timestamp(),
             }
 
@@ -310,7 +244,7 @@ class LLMTracker:
         except Exception as e:
             logging.error(f"Neatlogs: Failed to send span: {e}")
 
-    def _enqueue_span(self, call_data: NewLLMCallData):
+    def _enqueue_span(self, call_data: LLMCallData):
         self._send_queue.put(call_data)
 
     def _send_worker(self):
@@ -346,20 +280,7 @@ class LLMTracker:
         # Based on previous code, it just set level and cleared handlers.
         # We'll stick to that but ensure it's clean.
 
-    def log_llm_call(self, call_data: NewLLMCallData):
-        """
-        Log LLM call data to file and trigger server sending.
 
-        Args:
-            call_data (LLMCallData): The data to log and send.
-        """
-        # Log to file
-        log_entry = {"event_type": "LLM_CALL", "data": asdict(call_data)}
-        self.file_logger.info(json.dumps(log_entry, indent=2))
-
-        # Send to server
-        if self.enable_server_sending:
-            self._enqueue_span(call_data)
 
     def add_tags(self, tags: List[str]):
         """Add tags to the tracker."""

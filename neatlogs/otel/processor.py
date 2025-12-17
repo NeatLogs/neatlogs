@@ -14,7 +14,7 @@ from typing import Optional
 
 from opentelemetry.sdk.trace import SpanProcessor, ReadableSpan
 
-from ..new_core import LLMTracker, NewLLMCallData
+from ..core import LLMTracker, LLMCallData
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +115,7 @@ class NeatlogsSpanProcessor(SpanProcessor):
             serialized = serialize_span(span)
             external_trace_id = choose_external_trace_id(serialized)
 
-            call_data = NewLLMCallData(
+            call_data = LLMCallData(
                 span=serialized,
                 trace_id=external_trace_id,
                 api_key=self.tracker.api_key,

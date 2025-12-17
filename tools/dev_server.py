@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 async def log_sink(request: Request):
     print(f"Request Received: {request}")
     data = await request.json()
-    trace = json.loads(data["dataDump"])
+    trace = data["dataDump"]
     logger.info(f"Trace: {json.dumps(trace, indent=2)}")
     return {"message": "Hello, World!"}
 

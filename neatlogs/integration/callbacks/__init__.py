@@ -1,3 +1,0 @@
-"""
-Callbacks integration for Neatlogs.
-"""
