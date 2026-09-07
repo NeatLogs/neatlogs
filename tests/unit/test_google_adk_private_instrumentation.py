@@ -1,4 +1,5 @@
 import asyncio
+import types
 
 import pytest
 from opentelemetry import trace as trace_api
@@ -21,6 +22,7 @@ async def _run_local_adk(
     started: asyncio.Event | None = None,
     release: asyncio.Event | None = None,
     sync: bool = False,
+    before_wrap=None,
     after_wrap=None,
 ) -> str:
     from google.adk.agents import LlmAgent
@@ -99,6 +101,8 @@ async def _run_local_adk(
         ),
         session_service=sessions,
     )
+    if before_wrap is not None:
+        before_wrap(runner)
     if wrapped:
         runner = neatlogs.wrap(runner)
     if after_wrap is not None:
@@ -487,6 +491,37 @@ async def test_google_adk_sync_runner_uses_the_private_provider():
             ]
         )
         == 1
+    )
+    assert not _semantic_spans(foreign_exporter)
+
+
+@pytest.mark.asyncio
+async def test_google_adk_wrap_preserves_instance_async_override():
+    private_exporter, foreign_exporter = _init_adk(automatic=True)
+    override_calls = 0
+
+    def install_override(runner):
+        original = runner.run_async
+
+        async def instance_run_async(self, *args, **kwargs):
+            nonlocal override_calls
+            del self
+            override_calls += 1
+            async for event in original(*args, **kwargs):
+                yield event
+
+        runner.run_async = types.MethodType(instance_run_async, runner)
+
+    output = await _run_local_adk(
+        wrapped=True,
+        suffix="instance_override",
+        before_wrap=install_override,
+    )
+
+    assert output == "answer-instance_override"
+    assert override_calls == 1
+    assert any(
+        span.name == "google_adk.runner.run_async" for span in private_exporter.get_finished_spans()
     )
     assert not _semantic_spans(foreign_exporter)
 

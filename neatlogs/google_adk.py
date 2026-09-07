@@ -381,6 +381,8 @@ def _patch_run_async(runner: Any) -> None:
     if not hasattr(runner, "run_async"):
         return
 
+    instance_run_async = vars(runner).get("run_async")
+
     # Must itself be an async GENERATOR (use yield), because callers consume
     # run_async() with `async for`. A plain `async def` would return a coroutine
     # and break iteration. We stream events through, then finalize the span.
@@ -416,7 +418,9 @@ def _patch_run_async(runner: Any) -> None:
         try:
             # Stream events to the caller as they arrive (keeps run_async an async
             # generator), buffering them so we can extract span attrs at the end.
-            run_async = type(runner).run_async.__get__(runner, type(runner))
+            run_async = instance_run_async
+            if run_async is None:
+                run_async = type(runner).run_async.__get__(runner, type(runner))
             async for event in run_async(*args, **kwargs):
                 collected.append(event)
                 yield event
