@@ -8,12 +8,65 @@ Usage:
     >>> # runner.run() / runner.run_async() are now traced
 """
 
+import threading
 import time
 from typing import Any
 
 from opentelemetry.trace import StatusCode
 
 from ._wrap_utils import attach_as_current, detach, get_tracer, serialize
+
+_ADK_BIND_LOCK = threading.RLock()
+_ADK_BOUND = False
+
+
+class _ContextualGoogleADKTracer:
+    def __init__(self, scope: str, version: str | None, schema_url: str | None, attributes: Any):
+        self._scope = scope
+        self._version = version
+        self._schema_url = schema_url
+        self._attributes = attributes
+
+    def _tracer(self):
+        from opentelemetry import trace as trace_api
+
+        from ._wrap_utils import get_neatlogs_provider
+        from .instrumentation.openinference_isolation import provider_for_openinference
+
+        provider = get_neatlogs_provider()
+        if provider is None:
+            return trace_api.NoOpTracerProvider().get_tracer(self._scope)
+        return provider_for_openinference(provider).get_tracer(
+            self._scope,
+            self._version,
+            self._schema_url,
+            self._attributes,
+        )
+
+    def start_span(self, *args: Any, **kwargs: Any):
+        return self._tracer().start_span(*args, **kwargs)
+
+    def start_as_current_span(self, *args: Any, **kwargs: Any):
+        return self._tracer().start_as_current_span(*args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._tracer(), name)
+
+
+class _ContextualGoogleADKProvider:
+    def get_tracer(
+        self,
+        instrumenting_module_name: str,
+        instrumenting_library_version: str | None = None,
+        schema_url: str | None = None,
+        attributes: Any = None,
+    ) -> _ContextualGoogleADKTracer:
+        return _ContextualGoogleADKTracer(
+            instrumenting_module_name,
+            instrumenting_library_version,
+            schema_url,
+            attributes,
+        )
 
 
 def wrap_google_adk(runner: Any) -> Any:
@@ -23,9 +76,7 @@ def wrap_google_adk(runner: Any) -> Any:
     instrumentor on the current Neatlogs tracer provider.
     Returns the same runner instance.
     """
-    from .init import _instrument_library
-
-    _instrument_library("google_adk")
+    _ensure_google_adk_bound()
 
     if getattr(runner, "_neatlogs_patched", False):
         return runner
@@ -33,6 +84,52 @@ def wrap_google_adk(runner: Any) -> Any:
     _patch_run(runner)
     _patch_run_async(runner)
     return runner
+
+
+def _ensure_google_adk_bound() -> bool:
+    """Bind ADK OpenInference instrumentation to the provider active now."""
+    from opentelemetry.sdk.trace import TracerProvider
+
+    from ._wrap_utils import get_neatlogs_provider
+    from .instrumentation.openinference_isolation import provider_for_openinference
+
+    provider = get_neatlogs_provider()
+    if not isinstance(provider, TracerProvider):
+        return False
+
+    global _ADK_BOUND
+    with _ADK_BIND_LOCK:
+        if _ADK_BOUND:
+            return True
+
+        try:
+            from openinference.instrumentation.google_adk import GoogleADKInstrumentor
+        except Exception:
+            return False
+
+        instrumentor = GoogleADKInstrumentor()
+        if getattr(instrumentor, "_is_instrumented_by_opentelemetry", False):
+            instrumentor.uninstrument()
+        instrumentor.instrument(
+            tracer_provider=provider_for_openinference(_ContextualGoogleADKProvider())
+        )
+        _ADK_BOUND = True
+        return True
+
+
+def _reset_google_adk_binding() -> None:
+    """Clear ADK provider binding state after SDK shutdown."""
+    global _ADK_BOUND
+    with _ADK_BIND_LOCK:
+        if not _ADK_BOUND:
+            return
+        try:
+            from openinference.instrumentation.google_adk import GoogleADKInstrumentor
+
+            GoogleADKInstrumentor().uninstrument()
+        except Exception:
+            pass
+        _ADK_BOUND = False
 
 
 def _get_runner_attributes(runner: Any) -> dict:
@@ -227,6 +324,7 @@ def _patch_run(runner: Any) -> None:
     orig_run = runner.run
 
     def patched_run(*args, **kwargs):
+        _ensure_google_adk_bound()
         tracer = get_tracer()
         attrs = _get_runner_attributes(runner)
 
@@ -283,12 +381,11 @@ def _patch_run_async(runner: Any) -> None:
     if not hasattr(runner, "run_async"):
         return
 
-    orig_run_async = runner.run_async
-
     # Must itself be an async GENERATOR (use yield), because callers consume
     # run_async() with `async for`. A plain `async def` would return a coroutine
     # and break iteration. We stream events through, then finalize the span.
     async def patched_run_async(*args, **kwargs):
+        _ensure_google_adk_bound()
         tracer = get_tracer()
         attrs = _get_runner_attributes(runner)
 
@@ -319,7 +416,8 @@ def _patch_run_async(runner: Any) -> None:
         try:
             # Stream events to the caller as they arrive (keeps run_async an async
             # generator), buffering them so we can extract span attrs at the end.
-            async for event in orig_run_async(*args, **kwargs):
+            run_async = type(runner).run_async.__get__(runner, type(runner))
+            async for event in run_async(*args, **kwargs):
                 collected.append(event)
                 yield event
         except BaseException as exc:

@@ -149,6 +149,19 @@ class InstrumentationManager:
                 logger.info(f"⏭️  Skipped: {library} (not installed)")
             return
 
+        if library == "google_adk":
+            try:
+                from ..google_adk import _ensure_google_adk_bound
+
+                if _ensure_google_adk_bound():
+                    self.instrumented.add(library)
+                    if self.debug:
+                        logger.info("google_adk (OpenInference)")
+            except Exception as e:
+                if self.debug:
+                    logger.warning(f"google_adk (OpenInference): {e}")
+            return
+
         info = INSTRUMENTATION_REGISTRY["libraries"].get(library)
         if not info:
             if self.debug:
@@ -275,6 +288,14 @@ class InstrumentationManager:
         except Exception:
             pass
         for library in list(self.instrumented):
+            if library == "google_adk":
+                try:
+                    from ..google_adk import _reset_google_adk_binding
+
+                    _reset_google_adk_binding()
+                except Exception:
+                    pass
+                continue
             info = INSTRUMENTATION_REGISTRY["libraries"].get(library) or {}
             for convention in ("neatlogs", "openinference", "openllmetry"):
                 package_name = info.get(convention)

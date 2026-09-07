@@ -1135,6 +1135,12 @@ def _perform_shutdown(
         set_neatlogs_provider(None)
     except Exception:
         pass
+    try:
+        from .google_adk import _reset_google_adk_binding
+
+        _reset_google_adk_binding()
+    except Exception:
+        pass
 
     set_default_media_store(None)
     if _media_store is not None:
