@@ -1,12 +1,26 @@
 import asyncio
+import gc
+import weakref
 
 import pytest
 from opentelemetry import trace as trace_api
 from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExporter, SpanExportResult
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 import neatlogs
+
+
+class _SnapshotExporter(SpanExporter):
+    def __init__(self):
+        self.spans = []
+
+    def export(self, spans):
+        self.spans.extend(
+            {"name": span.name, "attributes": dict(span.attributes or {})} for span in spans
+        )
+        return SpanExportResult.SUCCESS
+
 
 pytest.importorskip("strands")
 pytest.importorskip("openinference.instrumentation.strands_agents")
@@ -115,6 +129,20 @@ def _semantic_spans(exporter):
     ]
 
 
+def _processor_names(provider):
+    return [
+        type(processor).__name__ for processor in provider._active_span_processor._span_processors
+    ]
+
+
+def _llm_spans(exporter):
+    return [
+        span
+        for span in _semantic_spans(exporter)
+        if span.attributes.get("openinference.span.kind") == "LLM"
+    ]
+
+
 def test_automatic_strands_instrumentation_uses_the_private_provider():
     private_provider, private_exporter, _, foreign_exporter = _providers()
     neatlogs.init(
@@ -142,6 +170,176 @@ def test_automatic_strands_instrumentation_uses_the_private_provider():
     assert "answer-automatic" in by_kind["LLM"].attributes["output.value"]
     assert by_kind["LLM"].attributes["llm.token_count.total"] == 13
     assert not _semantic_spans(foreign_exporter)
+
+
+def test_strands_processors_are_installed_only_when_strands_is_selected():
+    unselected_provider, _, _, _ = _providers()
+    neatlogs.init(
+        api_key="test-key",
+        disable_export=True,
+        instrumentations=[],
+        tracer_provider=unselected_provider,
+        register_shutdown_handlers=False,
+    )
+
+    assert "_NeatlogsStrandsProcessor" not in _processor_names(unselected_provider)
+
+    assert neatlogs.shutdown()
+    selected_provider = TracerProvider()
+    neatlogs.init(
+        api_key="test-key",
+        disable_export=True,
+        instrumentations=["strands"],
+        tracer_provider=selected_provider,
+        register_shutdown_handlers=False,
+    )
+
+    assert _processor_names(selected_provider)[:2] == [
+        "ProviderPreprocessor",
+        "NeatlogsSpanProcessor",
+    ]
+    hub = selected_provider._active_span_processor._span_processors[0]
+    assert type(hub._processors["strands"]).__name__ == "_NeatlogsStrandsProcessor"
+
+
+def test_active_client_routes_explicit_strands_wrap_to_client_provider():
+    default_provider, default_exporter, _, foreign_exporter = _providers()
+    neatlogs.init(
+        api_key="test-key",
+        disable_export=True,
+        instrumentations=["strands"],
+        tracer_provider=default_provider,
+        register_shutdown_handlers=False,
+    )
+    default_provider.add_span_processor(SimpleSpanProcessor(default_exporter))
+
+    client_provider = TracerProvider()
+    client_exporter = _SnapshotExporter()
+    client = neatlogs.Client(
+        api_key="client-key",
+        workflow_name="client-workflow",
+        disable_export=True,
+        tracer_provider=client_provider,
+    )
+    client_provider.add_span_processor(SimpleSpanProcessor(client_exporter))
+
+    with client.activate():
+        agent = neatlogs.strands_hooks(_local_agent("client"))
+        result = agent("question-client")
+
+    assert str(result).strip() == "answer-client"
+    client_llm = [
+        span
+        for span in client_exporter.spans
+        if span["attributes"].get("openinference.span.kind") == "LLM"
+    ]
+    assert len(client_llm) == 1
+    assert not _llm_spans(default_exporter)
+    assert not _semantic_spans(foreign_exporter)
+    assert client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_active_clients_keep_strands_spans_isolated():
+    default_provider, default_exporter, _, foreign_exporter = _providers()
+    neatlogs.init(
+        api_key="test-key",
+        disable_export=True,
+        instrumentations=["strands"],
+        tracer_provider=default_provider,
+        register_shutdown_handlers=False,
+    )
+    default_provider.add_span_processor(SimpleSpanProcessor(default_exporter))
+
+    first_provider = TracerProvider()
+    second_provider = TracerProvider()
+    first = neatlogs.Client(
+        api_key="first-key",
+        workflow_name="first-workflow",
+        disable_export=True,
+        tracer_provider=first_provider,
+    )
+    second = neatlogs.Client(
+        api_key="second-key",
+        workflow_name="second-workflow",
+        disable_export=True,
+        tracer_provider=second_provider,
+    )
+    first_exporter = InMemorySpanExporter()
+    second_exporter = InMemorySpanExporter()
+    first_provider.add_span_processor(SimpleSpanProcessor(first_exporter))
+    second_provider.add_span_processor(SimpleSpanProcessor(second_exporter))
+    first_agent = _local_agent("first-client")
+    second_agent = _local_agent("second-client")
+
+    async def invoke(client, agent, prompt):
+        with client.activate():
+            return await agent.invoke_async(prompt)
+
+    try:
+        results = await asyncio.gather(
+            invoke(first, first_agent, "question-first-client"),
+            invoke(second, second_agent, "question-second-client"),
+        )
+    finally:
+        first.shutdown()
+        second.shutdown()
+
+    assert [str(result).strip() for result in results] == [
+        "answer-first-client",
+        "answer-second-client",
+    ]
+    first_inputs = {span.attributes.get("input.value") for span in _llm_spans(first_exporter)}
+    second_inputs = {span.attributes.get("input.value") for span in _llm_spans(second_exporter)}
+    assert first_inputs == {"question-first-client"}
+    assert second_inputs == {"question-second-client"}
+    assert not _llm_spans(default_exporter)
+    assert not _semantic_spans(foreign_exporter)
+
+
+def test_strands_hooks_before_init_binds_when_neatlogs_initializes():
+    private_provider, private_exporter, _, foreign_exporter = _providers()
+    agent = _local_agent("deferred")
+    old_tracer = agent.tracer
+
+    assert neatlogs.strands_hooks(agent) is agent
+    assert agent.tracer is not old_tracer
+
+    neatlogs.init(
+        api_key="test-key",
+        disable_export=True,
+        tracer_provider=private_provider,
+        register_shutdown_handlers=False,
+    )
+    private_provider.add_span_processor(SimpleSpanProcessor(private_exporter))
+    result = agent("question-deferred")
+
+    assert str(result).strip() == "answer-deferred"
+    assert agent.tracer is not old_tracer
+    assert len(_llm_spans(private_exporter)) == 1
+    assert not _semantic_spans(foreign_exporter)
+
+
+def test_wrapped_strands_agent_retention_is_bounded_after_gc():
+    from neatlogs import strands as strands_module
+
+    private_provider, _, _, _ = _providers()
+    neatlogs.init(
+        api_key="test-key",
+        disable_export=True,
+        tracer_provider=private_provider,
+        register_shutdown_handlers=False,
+    )
+
+    agent = neatlogs.strands_hooks(_local_agent("gc"))
+    ref = weakref.ref(agent)
+    assert len(strands_module._WRAPPED_AGENTS) == 1
+
+    del agent
+    gc.collect()
+
+    assert ref() is None
+    assert len(strands_module._WRAPPED_AGENTS) == 0
 
 
 def test_strands_tool_call_has_one_complete_private_tool_span():
@@ -368,3 +566,110 @@ def test_strands_shutdown_and_reinitialize_bind_to_the_new_private_provider():
         )
         == 1
     )
+
+
+def test_default_shutdown_does_not_disable_a_live_client_strands_agent():
+    default_provider, _, _, _ = _providers()
+    neatlogs.init(
+        api_key="default-key",
+        disable_export=True,
+        instrumentations=["strands"],
+        tracer_provider=default_provider,
+        register_shutdown_handlers=False,
+    )
+
+    client_provider = TracerProvider()
+    client_exporter = _SnapshotExporter()
+    client_provider.add_span_processor(SimpleSpanProcessor(client_exporter))
+    client = neatlogs.Client(
+        api_key="client-key",
+        workflow_name="client-workflow",
+        disable_export=True,
+        tracer_provider=client_provider,
+    )
+    agent = _local_agent("live-client")
+    with client.activate():
+        neatlogs.strands_hooks(agent)
+        agent("question-live-client")
+
+    assert neatlogs.shutdown()
+
+    with client.activate():
+        agent("question-live-client")
+
+    llm_spans = [
+        span
+        for span in client_exporter.spans
+        if span["attributes"].get("openinference.span.kind") == "LLM"
+    ]
+    assert len(llm_spans) == 2
+    assert client.shutdown()
+
+
+def test_client_shutdown_removes_only_its_strands_state():
+    from strands.telemetry import tracer as tracer_module
+
+    from neatlogs import strands as strands_module
+
+    provider, _, _, _ = _providers()
+    exporter = _SnapshotExporter()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    client = neatlogs.Client(
+        api_key="client-key",
+        workflow_name="client-workflow",
+        disable_export=True,
+        tracer_provider=provider,
+    )
+    agent = _local_agent("client-shutdown")
+    original_agent_tracer = agent.tracer
+    original_singleton = tracer_module._tracer_instance
+
+    with client.activate():
+        neatlogs.strands_hooks(agent)
+        agent("question-client-shutdown")
+
+    assert client.shutdown()
+    assert agent.tracer is original_agent_tracer
+    assert tracer_module._tracer_instance is original_singleton
+    assert provider not in strands_module._PROVIDER_PROCESSORS
+    assert provider not in strands_module._PROVIDER_TRACERS
+    assert provider not in strands_module._PROVIDER_OWNERS
+
+
+def test_strands_provider_tracer_cache_does_not_retain_provider():
+    from neatlogs import strands as strands_module
+
+    provider = TracerProvider(shutdown_on_exit=False)
+    tracer = strands_module._tracer_for_provider(provider)
+    provider_ref = weakref.ref(provider)
+
+    strands_module.release_default_strands(provider)
+    del tracer
+    del provider
+    gc.collect()
+
+    assert provider_ref() is None
+
+
+def test_strands_conversion_precedes_existing_provider_exporters():
+    provider = TracerProvider()
+    exporter = _SnapshotExporter()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    client = neatlogs.Client(
+        api_key="client-key",
+        workflow_name="client-workflow",
+        disable_export=True,
+        tracer_provider=provider,
+    )
+    agent = _local_agent("existing-exporter")
+
+    with client.activate():
+        neatlogs.strands_hooks(agent)
+        agent("question-existing-exporter")
+
+    assert {span["attributes"].get("openinference.span.kind") for span in exporter.spans} >= {
+        "AGENT",
+        "CHAIN",
+        "LLM",
+    }
+    assert client.shutdown()
