@@ -5,6 +5,8 @@ Instrumentation manager.
 import importlib
 import json
 import logging
+import threading
+import weakref
 from functools import wraps
 from typing import Any, List, Optional, Set
 
@@ -17,6 +19,7 @@ from .openinference_isolation import (
     provider_for_native_instrumentation,
     provider_for_openinference,
 )
+from .preprocessing import add_provider_preprocessor, remove_provider_preprocessor
 from .registry import INSTRUMENTATION_REGISTRY, get_libraries_by_tag
 
 logger = logging.getLogger(__name__)
@@ -40,23 +43,30 @@ class _ManagedSpanProcessor(SpanProcessor):
     def __init__(self, delegate: SpanProcessor) -> None:
         self._delegate = delegate
         self._active = True
+        self._lock = threading.RLock()
 
     def on_start(self, span: Span, parent_context=None) -> None:
-        if self._active:
-            self._delegate.on_start(span, parent_context)
+        with self._lock:
+            if self._active:
+                self._delegate.on_start(span, parent_context)
 
     def on_end(self, span: ReadableSpan) -> None:
-        if self._active:
-            self._delegate.on_end(span)
+        with self._lock:
+            if self._active:
+                self._delegate.on_end(span)
 
     def shutdown(self) -> None:
-        self._active = False
-        self._delegate.shutdown()
+        with self._lock:
+            if not self._active:
+                return
+            self._active = False
+            self._delegate.shutdown()
 
     def force_flush(self, timeout_millis: int = 30000) -> bool:
-        if not self._active:
-            return True
-        return self._delegate.force_flush(timeout_millis)
+        with self._lock:
+            if not self._active:
+                return True
+            return self._delegate.force_flush(timeout_millis)
 
 
 class InstrumentationManager:
@@ -71,7 +81,11 @@ class InstrumentationManager:
         self._prepared: Set[str] = set()
         self._pydantic_ai_previous_default: Any = _NOT_SET
         self._pydantic_ai_installed_default: Any = None
-        self._pydantic_ai_processor: Optional[_ManagedSpanProcessor] = None
+        self._pydantic_ai_lock = threading.RLock()
+        self._pydantic_ai_closing = False
+        self._pydantic_ai_processors_by_provider: (
+            "weakref.WeakKeyDictionary[Any, _ManagedSpanProcessor]"
+        ) = weakref.WeakKeyDictionary()
 
     def prepare_span_processors(self, libraries: Optional[List[str]] = None) -> None:
         """Install processors that must run before Neatlogs' export processor."""
@@ -85,15 +99,24 @@ class InstrumentationManager:
 
             from ..pydantic_ai import set_native_auto_instrumentation
 
+            def ensure_pydantic_ai_provider(provider: Any) -> None:
+                with self._pydantic_ai_lock:
+                    if self._pydantic_ai_closing:
+                        return
+                    if provider in self._pydantic_ai_processors_by_provider:
+                        return
+                    processor = _ManagedSpanProcessor(OpenInferenceSpanProcessor())
+                    installed = add_provider_preprocessor(provider, "pydantic_ai", processor)
+                    self._pydantic_ai_processors_by_provider[provider] = installed
+
             self._pydantic_ai_previous_default = Agent._instrument_default
-            processor = _ManagedSpanProcessor(OpenInferenceSpanProcessor())
-            self.provider.add_span_processor(processor)
-            self._pydantic_ai_processor = processor
+            ensure_pydantic_ai_provider(self.provider)
 
             settings = InstrumentationSettings(
                 tracer_provider=provider_for_native_instrumentation(
                     self.provider,
                     module_prefixes=("pydantic_ai",),
+                    ensure_provider=ensure_pydantic_ai_provider,
                 ),
                 include_content=True,
             )
@@ -112,9 +135,16 @@ class InstrumentationManager:
                 set_native_auto_instrumentation(False)
             except Exception:
                 pass
-            if self._pydantic_ai_processor is not None:
-                self._pydantic_ai_processor.shutdown()
+            self._remove_pydantic_ai_processors()
             logger.warning("pydantic_ai native setup failed: %s", exc)
+
+    def _remove_pydantic_ai_processors(self) -> None:
+        with self._pydantic_ai_lock:
+            self._pydantic_ai_closing = True
+            providers = list(self._pydantic_ai_processors_by_provider)
+            self._pydantic_ai_processors_by_provider.clear()
+        for provider in providers:
+            remove_provider_preprocessor(provider, "pydantic_ai")
 
     def instrument_threading(self) -> None:
         try:
@@ -365,8 +395,7 @@ class InstrumentationManager:
                 set_native_auto_instrumentation(False)
             except Exception:
                 pass
-            if self._pydantic_ai_processor is not None:
-                self._pydantic_ai_processor.shutdown()
+            self._remove_pydantic_ai_processors()
             self.instrumented.discard("pydantic_ai")
             self._prepared.discard("pydantic_ai")
         for library in list(self.instrumented):

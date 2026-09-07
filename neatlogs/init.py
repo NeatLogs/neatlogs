@@ -50,6 +50,7 @@ from .core.upload_authority import (
 from .core.upload_authority import uploads_enabled as resolve_uploads_enabled
 from .errors import NeatlogsConfigurationError
 from .instrumentation.manager import InstrumentationManager
+from .instrumentation.preprocessing import ensure_provider_preprocessor
 from .version import __version__
 
 logger = get_logger()
@@ -540,6 +541,7 @@ def init(
     from ._wrap_utils import set_neatlogs_provider
 
     set_neatlogs_provider(provider)
+    ensure_provider_preprocessor(provider)
 
     global _instrumentation_manager
     manager = InstrumentationManager(

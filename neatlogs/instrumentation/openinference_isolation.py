@@ -9,7 +9,7 @@ to Neatlogs' private parent key.
 
 import sys
 from contextlib import contextmanager
-from typing import Any, Iterable, Iterator, Optional
+from typing import Any, Callable, Iterable, Iterator, Optional
 
 from opentelemetry import context as context_api
 from opentelemetry import trace as trace_api
@@ -19,6 +19,7 @@ from opentelemetry.trace.propagation import _SPAN_KEY
 from .._wrap_utils import (
     _current_neatlogs_parent,
     _isolation_active,
+    get_neatlogs_provider,
     set_neatlogs_span_in_context,
 )
 
@@ -182,6 +183,60 @@ class _IsolatedNativeTracerProvider:
         return getattr(self._provider, name)
 
 
+class _DynamicNativeTracerProvider:
+    __slots__ = ("_default_provider", "_ensure_provider")
+
+    def __init__(self, default_provider: Any, ensure_provider: Callable[[Any], None]) -> None:
+        self._default_provider = default_provider
+        self._ensure_provider = ensure_provider
+
+    def _current_provider(self) -> Any:
+        provider = get_neatlogs_provider() or self._default_provider
+        self._ensure_provider(provider)
+        return provider
+
+    def get_tracer(self, *args: Any, **kwargs: Any) -> Any:
+        return _DynamicNativeTracer(
+            self._default_provider,
+            self._ensure_provider,
+            args,
+            kwargs,
+        )
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._current_provider(), name)
+
+
+class _DynamicNativeTracer:
+    __slots__ = ("_default_provider", "_ensure_provider", "_args", "_kwargs")
+
+    def __init__(
+        self,
+        default_provider: Any,
+        ensure_provider: Callable[[Any], None],
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+    ) -> None:
+        self._default_provider = default_provider
+        self._ensure_provider = ensure_provider
+        self._args = args
+        self._kwargs = dict(kwargs)
+
+    def _current_tracer(self) -> _IsolatedNativeTracer:
+        provider = get_neatlogs_provider() or self._default_provider
+        self._ensure_provider(provider)
+        return _IsolatedNativeTracer(provider.get_tracer(*self._args, **self._kwargs))
+
+    def start_span(self, *args: Any, **kwargs: Any) -> Any:
+        return self._current_tracer().start_span(*args, **kwargs)
+
+    def start_as_current_span(self, *args: Any, **kwargs: Any) -> Any:
+        return self._current_tracer().start_as_current_span(*args, **kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._current_tracer(), name)
+
+
 def _patch_loaded_references(prefixes: Iterable[str]) -> None:
     """Replace direct OTel imports held by supported integration modules."""
     for name, module in tuple(sys.modules.items()):
@@ -237,11 +292,16 @@ def provider_for_openinference(provider: Any) -> Any:
 
 
 def provider_for_native_instrumentation(
-    provider: Any, *, module_prefixes: Iterable[str] = ()
+    provider: Any,
+    *,
+    module_prefixes: Iterable[str] = (),
+    ensure_provider: Optional[Callable[[Any], None]] = None,
 ) -> Any:
     """Adapt native OTel integrations to Neatlogs' provider-local context."""
     if not _isolation_active():
         return provider
     _install_patch()
     _patch_loaded_references(module_prefixes)
+    if ensure_provider is not None:
+        return _DynamicNativeTracerProvider(provider, ensure_provider)
     return _IsolatedNativeTracerProvider(provider)
