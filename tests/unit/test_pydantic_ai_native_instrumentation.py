@@ -1,18 +1,64 @@
 import asyncio
+import threading
+from types import SimpleNamespace
 
 import pytest
 from opentelemetry import trace as trace_api
 from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExporter, SpanExportResult
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import StatusCode
 
 import neatlogs
+from neatlogs.client import Client
+from neatlogs.instrumentation.manager import _ManagedSpanProcessor
 
 pytest.importorskip("pydantic_ai")
 from pydantic_ai import Agent
 from pydantic_ai.models.instrumented import InstrumentationSettings
 from pydantic_ai.models.test import TestModel
+
+
+class _SnapshotExporter(SpanExporter):
+    def __init__(self):
+        self.spans = []
+
+    def export(self, spans):
+        self.spans.extend(
+            SimpleNamespace(
+                name=span.name,
+                attributes=dict(span.attributes or {}),
+                context=span.context,
+                parent=span.parent,
+                status=span.status,
+                events=tuple(span.events),
+            )
+            for span in spans
+        )
+        return SpanExportResult.SUCCESS
+
+    def get_finished_spans(self):
+        return tuple(self.spans)
+
+
+class _BlockingProcessor:
+    def __init__(self):
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.stopped = threading.Event()
+
+    def on_start(self, span, parent_context=None):
+        pass
+
+    def on_end(self, span):
+        self.started.set()
+        assert self.release.wait(timeout=2)
+
+    def shutdown(self):
+        self.stopped.set()
+
+    def force_flush(self, timeout_millis=30000):
+        return True
 
 
 @pytest.fixture(autouse=True)
@@ -24,7 +70,7 @@ def _restore_pydantic_ai_default():
 
 def _init_with_exporter(*, foreign_exporter=None):
     private_provider = TracerProvider()
-    private_exporter = InMemorySpanExporter()
+    private_exporter = _SnapshotExporter()
 
     if foreign_exporter is not None:
         foreign_provider = TracerProvider()
@@ -43,7 +89,7 @@ def _init_with_exporter(*, foreign_exporter=None):
 
 
 def test_native_pydantic_ai_spans_are_normalized_and_parented_to_workflow():
-    _, exporter = _init_with_exporter()
+    private_provider, exporter = _init_with_exporter()
     agent = Agent(TestModel(custom_output_text="deterministic answer"), name="support-agent")
 
     with neatlogs.trace("support-workflow", kind="WORKFLOW"):
@@ -56,6 +102,11 @@ def test_native_pydantic_ai_spans_are_normalized_and_parented_to_workflow():
     agent_span = spans["agent run"]
     model_span = spans["chat test"]
 
+    processor_names = [
+        type(processor).__name__
+        for processor in private_provider._active_span_processor._span_processors
+    ]
+    assert processor_names[:2] == ["ProviderPreprocessor", "NeatlogsSpanProcessor"]
     assert agent_span.parent.span_id == workflow.context.span_id
     assert model_span.parent.span_id == agent_span.context.span_id
     assert agent_span.attributes["openinference.span.kind"] == "AGENT"
@@ -65,6 +116,31 @@ def test_native_pydantic_ai_spans_are_normalized_and_parented_to_workflow():
     assert model_span.attributes["llm.model_name"] == "test"
     assert model_span.attributes["input.value"] == "answer this"
     assert model_span.attributes["output.value"] == "deterministic answer"
+    assert agent_span.attributes["neatlogs.agent.input"] == "answer this"
+    assert model_span.attributes["neatlogs.llm.output"] == "deterministic answer"
+
+
+def test_native_normalization_precedes_existing_provider_exporters():
+    provider = TracerProvider()
+    exporter = _SnapshotExporter()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+
+    neatlogs.init(
+        api_key="test-key",
+        disable_export=True,
+        instrumentations=["pydantic_ai"],
+        tracer_provider=provider,
+        register_shutdown_handlers=False,
+    )
+    agent = Agent(TestModel(custom_output_text="normalized first"), name="ordered-agent")
+    with neatlogs.trace("ordered-workflow", kind="WORKFLOW"):
+        agent.run_sync("normalize before export")
+
+    spans = {span.name: span for span in exporter.get_finished_spans()}
+    assert spans["agent run"].attributes["openinference.span.kind"] == "AGENT"
+    assert spans["agent run"].attributes["input.value"] == "normalize before export"
+    assert spans["chat test"].attributes["openinference.span.kind"] == "LLM"
+    assert spans["chat test"].attributes["output.value"] == "normalized first"
 
 
 def test_native_pydantic_ai_spans_do_not_reach_the_global_provider():
@@ -82,6 +158,59 @@ def test_native_pydantic_ai_spans_do_not_reach_the_global_provider():
 
     assert {"private-workflow", "agent run", "chat test"}.issubset(private_names)
     assert foreign_names == {"foreign-root"}
+
+
+def test_native_pydantic_ai_spans_follow_the_active_client_provider():
+    _, default_exporter = _init_with_exporter()
+    client_provider = TracerProvider()
+    client_exporter = _SnapshotExporter()
+    client = Client(
+        api_key="client-key",
+        workflow_name="client-workflow",
+        disable_export=True,
+        tracer_provider=client_provider,
+    )
+    client_provider.add_span_processor(SimpleSpanProcessor(client_exporter))
+    agent = neatlogs.wrap(Agent(TestModel(custom_output_text="client answer"), name="client-agent"))
+
+    try:
+        with client.activate():
+            with neatlogs.trace("client-run", kind="WORKFLOW"):
+                result = agent.run_sync("route to client")
+    finally:
+        client.shutdown()
+
+    assert result.output == "client answer"
+    assert {span.name for span in default_exporter.get_finished_spans()} == set()
+
+    client_spans = {span.name: span for span in client_exporter.spans}
+    assert {"client-run", "agent run", "chat test"}.issubset(client_spans)
+    assert client_spans["agent run"].attributes["openinference.span.kind"] == "AGENT"
+    assert client_spans["agent run"].attributes["input.value"] == "route to client"
+    assert client_spans["chat test"].attributes["openinference.span.kind"] == "LLM"
+    assert client_spans["chat test"].attributes["output.value"] == "client answer"
+    assert client_spans["agent run"].parent.span_id == client_spans["client-run"].context.span_id
+    assert client_spans["chat test"].parent.span_id == client_spans["agent run"].context.span_id
+
+
+def test_managed_processor_shutdown_waits_for_active_normalization():
+    delegate = _BlockingProcessor()
+    managed = _ManagedSpanProcessor(delegate)
+    callback = threading.Thread(target=managed.on_end, args=(object(),))
+    shutdown = threading.Thread(target=managed.shutdown)
+
+    callback.start()
+    assert delegate.started.wait(timeout=1)
+    shutdown.start()
+    assert not delegate.stopped.wait(timeout=0.05)
+
+    delegate.release.set()
+    callback.join(timeout=1)
+    shutdown.join(timeout=1)
+
+    assert not callback.is_alive()
+    assert not shutdown.is_alive()
+    assert delegate.stopped.is_set()
 
 
 def test_explicit_agent_opt_out_is_preserved():
@@ -166,11 +295,11 @@ def test_native_pydantic_ai_tool_span_has_expected_hierarchy():
         by_kind.setdefault(span.attributes.get("openinference.span.kind"), []).append(span)
 
     agent_span = by_kind["AGENT"][0]
-    chain_span = by_kind["CHAIN"][0]
     tool_span = by_kind["TOOL"][0]
     llm_spans = by_kind["LLM"]
 
     assert len(llm_spans) == 2
+    chain_span = by_kind["CHAIN"][0]
     assert chain_span.parent.span_id == agent_span.context.span_id
     assert tool_span.parent.span_id == chain_span.context.span_id
     assert tool_span.attributes["tool.name"] == "add"
