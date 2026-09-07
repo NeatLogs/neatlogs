@@ -288,12 +288,6 @@ class InstrumentationManager:
             pass
         for library in list(self.instrumented):
             if library == "strands":
-                try:
-                    from ..strands import uninstrument_strands
-
-                    uninstrument_strands()
-                except Exception:
-                    pass
                 continue
             info = INSTRUMENTATION_REGISTRY["libraries"].get(library) or {}
             for convention in ("neatlogs", "openinference", "openllmetry"):

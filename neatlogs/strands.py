@@ -9,14 +9,23 @@ from openinference.instrumentation.strands_agents import (
     StrandsAgentsToOpenInferenceProcessor,
 )
 
+from ._wrap_utils import get_active_client, get_neatlogs_provider
 from .instrumentation.openinference_isolation import provider_for_openinference
+from .instrumentation.preprocessing import (
+    add_provider_preprocessor,
+    remove_provider_preprocessor,
+)
 
 _LOCK = threading.RLock()
-_ACTIVE_PROVIDER: Optional[Any] = None
-_ACTIVE_TRACER: Optional[Any] = None
+_DEFAULT_OWNER = object()
+_CONTEXTUAL_TRACER: Optional[Any] = None
 _PREVIOUS_TRACER: Optional[Any] = None
-_WRAPPED_AGENTS: list[tuple[Any, Any]] = []
+_WRAPPED_AGENTS: "weakref.WeakKeyDictionary[Any, tuple[Any, Any]]" = weakref.WeakKeyDictionary()
+_PROVIDER_TRACERS: "weakref.WeakKeyDictionary[Any, weakref.ReferenceType[Any]]" = (
+    weakref.WeakKeyDictionary()
+)
 _PROVIDER_PROCESSORS: "weakref.WeakKeyDictionary[Any, Any]" = weakref.WeakKeyDictionary()
+_PROVIDER_OWNERS: "weakref.WeakKeyDictionary[Any, set[Any]]" = weakref.WeakKeyDictionary()
 
 
 class _NeatlogsStrandsProcessor(StrandsAgentsToOpenInferenceProcessor):
@@ -27,74 +36,151 @@ class _NeatlogsStrandsProcessor(StrandsAgentsToOpenInferenceProcessor):
         )
         super().on_end(span)
         if interrupted:
-            # The upstream converter marks non-error spans OK. An interrupted
-            # Neatlogs span deliberately retains the framework's prior status.
             span._status = status
 
 
-def prepare_strands(provider: Any) -> bool:
-    """Install the Strands-to-OpenInference processor before export processors."""
-    with _LOCK:
-        try:
-            if provider in _PROVIDER_PROCESSORS:
-                return True
-        except TypeError:
-            pass
+class _ContextualStrandsTracer:
+    def __init__(self, fallback: Any) -> None:
+        self._fallback = fallback
 
-        processor = _NeatlogsStrandsProcessor()
-        provider.add_span_processor(processor)
-        try:
-            _PROVIDER_PROCESSORS[provider] = processor
-        except TypeError:
-            pass
+    def _current(self) -> Any:
+        provider = get_neatlogs_provider()
+        if provider is None:
+            if self._fallback is not None:
+                return self._fallback
+            from strands.telemetry.tracer import Tracer
+
+            return Tracer()
+        return _tracer_for_provider(provider, self._fallback)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._current(), name)
+
+
+def _current_owner() -> Any:
+    return get_active_client() or _DEFAULT_OWNER
+
+
+def prepare_strands(provider: Any, owner: Any = None) -> bool:
+    """Install Strands conversion before Neatlogs normalization and export."""
+    with _LOCK:
+        owner = _current_owner() if owner is None else owner
+        owners = _PROVIDER_OWNERS.setdefault(provider, set())
+        owners.add(owner)
+        if provider not in _PROVIDER_PROCESSORS:
+            processor = _NeatlogsStrandsProcessor()
+            installed = add_provider_preprocessor(provider, "strands", processor)
+            _PROVIDER_PROCESSORS[provider] = installed
     return True
 
 
-def instrument_strands(provider: Any) -> bool:
-    """Route future Strands agents through the current Neatlogs provider."""
-    from strands.telemetry import tracer as tracer_module
-    from strands.telemetry.tracer import Tracer
-
-    prepare_strands(provider)
-    oi_provider = provider_for_openinference(provider)
-
-    global _ACTIVE_PROVIDER, _ACTIVE_TRACER, _PREVIOUS_TRACER
+def _tracer_for_provider(provider: Any, fallback: Any = None) -> Any:
     with _LOCK:
-        if (
-            _ACTIVE_PROVIDER is provider
-            and _ACTIVE_TRACER is not None
-            and tracer_module._tracer_instance is _ACTIVE_TRACER
-        ):
-            return True
+        existing_ref = _PROVIDER_TRACERS.get(provider)
+        existing = existing_ref() if existing_ref is not None else None
+        if existing is not None:
+            prepare_strands(provider)
+            return existing
 
-        _restore_strands_locked(tracer_module)
-        previous = tracer_module._tracer_instance
-        tracer = copy.copy(previous) if previous is not None else Tracer()
+        from strands.telemetry.tracer import Tracer
+
+        prepare_strands(provider)
+        base = fallback if fallback is not None else _PREVIOUS_TRACER
+        tracer = copy.copy(base) if base is not None else Tracer()
+        oi_provider = provider_for_openinference(provider)
         tracer.tracer_provider = oi_provider
         tracer.tracer = oi_provider.get_tracer(tracer.service_name)
-        tracer_module._tracer_instance = tracer
+        _PROVIDER_TRACERS[provider] = weakref.ref(tracer)
+        return tracer
 
-        _PREVIOUS_TRACER = previous
-        _ACTIVE_TRACER = tracer
-        _ACTIVE_PROVIDER = provider
+
+def _ensure_contextual_tracer_locked() -> Any:
+    from strands.telemetry import tracer as tracer_module
+
+    global _CONTEXTUAL_TRACER, _PREVIOUS_TRACER
+    if _CONTEXTUAL_TRACER is None:
+        _PREVIOUS_TRACER = tracer_module._tracer_instance
+        _CONTEXTUAL_TRACER = _ContextualStrandsTracer(_PREVIOUS_TRACER)
+    if tracer_module._tracer_instance is not _CONTEXTUAL_TRACER:
+        tracer_module._tracer_instance = _CONTEXTUAL_TRACER
+    return _CONTEXTUAL_TRACER
+
+
+def instrument_strands(provider: Any, owner: Any = _DEFAULT_OWNER) -> bool:
+    """Route Strands telemetry through the provider active for each invocation."""
+    with _LOCK:
+        prepare_strands(provider, owner)
+        _ensure_contextual_tracer_locked()
+        for agent, (previous, current_owner) in list(_WRAPPED_AGENTS.items()):
+            if current_owner is None:
+                _WRAPPED_AGENTS[agent] = (previous, owner)
     return True
+
+
+def has_wrapped_agents() -> bool:
+    with _LOCK:
+        return bool(_WRAPPED_AGENTS)
 
 
 def strands_hooks(agent: Any) -> Any:
     """Route an existing Strands agent through Neatlogs and return it unchanged."""
-    from .init import _instrument_library
-
-    _instrument_library("strands")
     with _LOCK:
-        tracer = _ACTIVE_TRACER
-        if tracer is not None and getattr(agent, "tracer", None) is not tracer:
-            _remember_agent(agent, getattr(agent, "tracer", None))
+        tracer = _ensure_contextual_tracer_locked()
+        provider = get_neatlogs_provider()
+        owner = _current_owner() if provider is not None else None
+        if provider is not None:
+            prepare_strands(provider, owner)
+        try:
+            if agent not in _WRAPPED_AGENTS:
+                previous = getattr(agent, "tracer", None)
+                if previous is tracer:
+                    previous = _PREVIOUS_TRACER
+                _WRAPPED_AGENTS[agent] = (previous, owner)
+        except TypeError:
+            pass
+        if getattr(agent, "tracer", None) is not tracer:
             agent.tracer = tracer
         try:
             setattr(agent, "_neatlogs_patched", True)
         except Exception:
             pass
     return agent
+
+
+def release_strands(provider: Any, owner: Any) -> None:
+    try:
+        from strands.telemetry import tracer as tracer_module
+    except Exception:
+        return
+
+    global _CONTEXTUAL_TRACER, _PREVIOUS_TRACER
+    with _LOCK:
+        contextual = _CONTEXTUAL_TRACER
+        for agent, (previous, agent_owner) in list(_WRAPPED_AGENTS.items()):
+            if agent_owner is owner:
+                if getattr(agent, "tracer", None) is contextual:
+                    agent.tracer = previous
+                _WRAPPED_AGENTS.pop(agent, None)
+
+        owners = _PROVIDER_OWNERS.get(provider)
+        if owners is not None:
+            owners.discard(owner)
+            if not owners:
+                _PROVIDER_OWNERS.pop(provider, None)
+                _PROVIDER_TRACERS.pop(provider, None)
+                _PROVIDER_PROCESSORS.pop(provider, None)
+                remove_provider_preprocessor(provider, "strands")
+
+        if _PROVIDER_OWNERS or _WRAPPED_AGENTS:
+            return
+        if contextual is not None and tracer_module._tracer_instance is contextual:
+            tracer_module._tracer_instance = _PREVIOUS_TRACER
+        _CONTEXTUAL_TRACER = None
+        _PREVIOUS_TRACER = None
+
+
+def release_default_strands(provider: Any) -> None:
+    release_strands(provider, _DEFAULT_OWNER)
 
 
 def uninstrument_strands() -> None:
@@ -104,35 +190,19 @@ def uninstrument_strands() -> None:
     except Exception:
         return
 
+    global _CONTEXTUAL_TRACER, _PREVIOUS_TRACER
     with _LOCK:
-        _restore_strands_locked(tracer_module)
-
-
-def _remember_agent(agent: Any, previous_tracer: Any) -> None:
-    for reference, _ in _WRAPPED_AGENTS:
-        if reference() is agent:
-            return
-    try:
-        reference = weakref.ref(agent)
-    except TypeError:
-        reference = lambda: agent
-    _WRAPPED_AGENTS.append((reference, previous_tracer))
-
-
-def _restore_strands_locked(tracer_module: Any) -> None:
-    global _ACTIVE_PROVIDER, _ACTIVE_TRACER, _PREVIOUS_TRACER
-    active = _ACTIVE_TRACER
-    if active is None:
-        return
-
-    if tracer_module._tracer_instance is active:
-        tracer_module._tracer_instance = _PREVIOUS_TRACER
-
-    for reference, previous in _WRAPPED_AGENTS:
-        agent = reference()
-        if agent is not None and getattr(agent, "tracer", None) is active:
-            agent.tracer = previous
-    _WRAPPED_AGENTS.clear()
-    _ACTIVE_PROVIDER = None
-    _ACTIVE_TRACER = None
-    _PREVIOUS_TRACER = None
+        contextual = _CONTEXTUAL_TRACER
+        if contextual is not None and tracer_module._tracer_instance is contextual:
+            tracer_module._tracer_instance = _PREVIOUS_TRACER
+        for agent, (previous, _) in list(_WRAPPED_AGENTS.items()):
+            if getattr(agent, "tracer", None) is contextual:
+                agent.tracer = previous
+        _WRAPPED_AGENTS.clear()
+        _PROVIDER_TRACERS.clear()
+        for provider in list(_PROVIDER_PROCESSORS):
+            remove_provider_preprocessor(provider, "strands")
+        _PROVIDER_PROCESSORS.clear()
+        _PROVIDER_OWNERS.clear()
+        _CONTEXTUAL_TRACER = None
+        _PREVIOUS_TRACER = None

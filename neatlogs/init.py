@@ -5,7 +5,6 @@ Neatlogs SDK.
 import atexit
 import functools
 import hashlib
-import importlib.util
 import json
 import math
 import os
@@ -51,6 +50,7 @@ from .core.upload_authority import (
 from .core.upload_authority import uploads_enabled as resolve_uploads_enabled
 from .errors import NeatlogsConfigurationError
 from .instrumentation.manager import InstrumentationManager
+from .instrumentation.preprocessing import ensure_provider_preprocessor
 from .version import __version__
 
 logger = get_logger()
@@ -550,16 +550,21 @@ def init(
     from ._wrap_utils import set_neatlogs_provider
 
     set_neatlogs_provider(provider)
+    ensure_provider_preprocessor(provider)
 
     # Strands converts its native GenAI spans in an on_end processor. It must run
-    # before Neatlogs' normalizer and exporter see those spans.
-    if importlib.util.find_spec("strands") is not None:
+    # before Neatlogs' normalizer and exporter see those spans, but only when
+    # Strands is explicitly selected.
+    strands_module = sys.modules.get("neatlogs.strands")
+    wrapped_strands_agents = bool(
+        strands_module is not None
+        and getattr(strands_module, "has_wrapped_agents", lambda: False)()
+    )
+    if (instrumentations and "strands" in instrumentations) or wrapped_strands_agents:
         try:
-            from .strands import instrument_strands, prepare_strands
+            from .strands import instrument_strands
 
-            prepare_strands(provider)
-            if instrumentations and "strands" in instrumentations:
-                instrument_strands(provider)
+            instrument_strands(provider)
         except Exception as exc:
             if debug:
                 logger.debug("Could not prepare Strands instrumentation: %s", exc)
@@ -1138,6 +1143,15 @@ def _perform_shutdown(
             logger.debug("Instrumentation cleanup failed or timed out: %s", result)
             success = False
         _instrumentation_manager = None
+
+    if "neatlogs.strands" in sys.modules:
+        try:
+            from .strands import release_default_strands
+
+            if tracer_provider is not None:
+                release_default_strands(tracer_provider)
+        except Exception:
+            pass
 
     # Drop the cached wrapper tracer (used by wrap()/trace processors like the
     # OpenAI Agents one) so the next init() rebinds it to the new provider. Also
