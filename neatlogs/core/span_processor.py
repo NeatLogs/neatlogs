@@ -308,6 +308,7 @@ class NeatlogsSpanProcessor(SpanProcessor):
             ctx = get_current()
             variables_json = get_value("neatlogs.system_prompt_variables", context=ctx)
             template = get_value("neatlogs.system_prompt_template", context=ctx)
+            template_name = get_value("neatlogs.system_prompt_name", context=ctx)
             version_val = get_value("neatlogs.prompt_version", context=ctx)
 
             if not variables_json:
@@ -345,6 +346,8 @@ class NeatlogsSpanProcessor(SpanProcessor):
                 span.set_attribute("llm.prompt_template_variables", variables_json)
             if template:
                 span.set_attribute("llm.prompt_template", template)
+                if template_name:
+                    span.set_attribute("llm.prompt_template.name", template_name)
             if version_val:
                 span.set_attribute("llm.prompt_template.version", version_val)
             if user_template:
@@ -465,6 +468,7 @@ class NeatlogsSpanProcessor(SpanProcessor):
                     "neatlogs.llm.prompt_template",
                     "neatlogs.llm.prompt_template_variables",
                     "neatlogs.llm.prompt_template.version",
+                    "neatlogs.llm.prompt_template.name",
                 ):
                     unified_attrs.pop(k, None)
 

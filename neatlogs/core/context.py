@@ -220,6 +220,7 @@ def trace(
             c = set_value("neatlogs.system_prompt_variables", variables_json, context=c)
         if template_string:
             c = set_value("neatlogs.system_prompt_template", template_string, context=c)
+            c = set_value("neatlogs.system_prompt_name", name.strip(), context=c)
         if user_variables_json:
             c = set_value("neatlogs.user_prompt_variables", user_variables_json, context=c)
         if user_template_string:
