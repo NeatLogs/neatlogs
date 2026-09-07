@@ -421,32 +421,96 @@ class _NeatlogsSpanCM:
     children still nest under this span. Parent resolution and foreign-parent
     detachment come from the guard tracer, so the caller passes no ``context``."""
 
-    __slots__ = ("_tracer", "_name", "_kwargs", "_span", "_token")
+    __slots__ = (
+        "_tracer",
+        "_name",
+        "_kwargs",
+        "_span",
+        "_token",
+        "_auto_root_kind",
+        "_auto_root_initializer",
+        "_root",
+        "_root_token",
+    )
 
-    def __init__(self, tracer: otel_trace.Tracer, name: str, **start_kwargs: Any):
+    def __init__(
+        self,
+        tracer: otel_trace.Tracer,
+        name: str,
+        *,
+        auto_root_kind: Optional[str] = None,
+        auto_root_initializer: Optional[Callable[[otel_trace.Span], None]] = None,
+        **start_kwargs: Any,
+    ):
         self._tracer = tracer
         self._name = name
         self._kwargs = start_kwargs
         self._span: Optional[otel_trace.Span] = None
         self._token: Any = None
+        self._auto_root_kind = auto_root_kind
+        self._auto_root_initializer = auto_root_initializer
+        self._root: Optional[otel_trace.Span] = None
+        self._root_token: Any = None
+
+    @property
+    def has_auto_root(self) -> bool:
+        return self._root is not None
 
     def __enter__(self) -> otel_trace.Span:
-        self._span = self._tracer.start_span(self._name, **self._kwargs)
-        self._token = attach_as_current(self._span)
-        return self._span
+        if self._auto_root_kind and _should_auto_root(self._auto_root_kind):
+            self._root = self._tracer.start_span(
+                _resolve_root_workflow_name(),
+                attributes={"neatlogs.span.kind": "workflow", "neatlogs.auto_root": True},
+            )
+            apply_wrap_context_attributes(self._root, is_root=True)
+            if self._auto_root_initializer is not None:
+                try:
+                    self._auto_root_initializer(self._root)
+                except Exception:
+                    pass
+            self._root_token = attach_as_current(self._root)
+        try:
+            self._span = self._tracer.start_span(self._name, **self._kwargs)
+            self._token = attach_as_current(self._span)
+            return self._span
+        except Exception:
+            if self._root_token is not None:
+                detach(self._root_token)
+            if self._root is not None:
+                self._root.end()
+            raise
 
     def __exit__(self, exc_type, exc, tb) -> bool:
         if self._token is not None:
             detach(self._token)
-        if self._span is not None:
-            self._span.end()
+        try:
+            if self._span is not None:
+                self._span.end()
+        finally:
+            if self._root_token is not None:
+                detach(self._root_token)
+            if self._root is not None:
+                self._root.end()
         return False
 
 
-def neatlogs_span(scope: str, name: str, **start_kwargs: Any) -> "_NeatlogsSpanCM":
+def neatlogs_span(
+    scope: str,
+    name: str,
+    *,
+    _auto_root_kind: Optional[str] = None,
+    _auto_root_initializer: Optional[Callable[[otel_trace.Span], None]] = None,
+    **start_kwargs: Any,
+) -> "_NeatlogsSpanCM":
     """Open an internal neatlogs span (decorator / trace() block) that is safe in
     both default and isolated modes. See :class:`_NeatlogsSpanCM`."""
-    return _NeatlogsSpanCM(get_internal_tracer(scope), name, **start_kwargs)
+    return _NeatlogsSpanCM(
+        get_internal_tracer(scope),
+        name,
+        auto_root_kind=_auto_root_kind,
+        auto_root_initializer=_auto_root_initializer,
+        **start_kwargs,
+    )
 
 
 def _bootstrap_from_env(api_key: str) -> None:
@@ -675,11 +739,10 @@ def is_suppressed() -> bool:
 # Auto-root
 #
 # The backend only renders a trace once it contains a *parentless* span of a
-# root-eligible kind (WORKFLOW / CHAIN / AGENT / MCP_TOOL). Direct-provider
-# wrappers (openai, anthropic, bedrock, ...) only ever emit non-root spans
-# (llm / embedding / reranker / tool). So a bare ``client = neatlogs.wrap(...)``
-# call with no surrounding ``@span`` / ``trace()`` produces an orphan span and
-# the trace never renders.
+# root-eligible kind (WORKFLOW / CHAIN / AGENT / MCP_TOOL / LLM). Direct-provider
+# wrappers (openai, anthropic, bedrock, ...) may emit either root-eligible LLM
+# spans or non-root spans (embedding / reranker / tool). A bare non-root call
+# still needs a workflow parent so the trace can finalize.
 #
 # ``get_provider_tracer()`` returns a tracer facade used *only* by those
 # direct-provider wrappers: when a span would otherwise be parentless and is a
@@ -692,13 +755,22 @@ def is_suppressed() -> bool:
 
 # A parentless span of one of these kinds already satisfies the backend's
 # root requirement, so it must NOT be wrapped in another root.
-_ROOT_KINDS = frozenset({"workflow", "chain", "agent", "mcp_tool"})
+_ROOT_KINDS = frozenset({"workflow", "chain", "agent", "mcp_tool", "llm"})
 
 
 def _auto_root_enabled() -> bool:
     """Auto-root is on unless explicitly disabled via NEATLOGS_AUTO_ROOT."""
     val = os.environ.get("NEATLOGS_AUTO_ROOT", "").strip().lower()
     return val not in ("false", "0", "no", "off")
+
+
+def _should_auto_root(kind: str, *, explicit_context: bool = False) -> bool:
+    return (
+        _auto_root_enabled()
+        and str(kind or "").lower() not in _ROOT_KINDS
+        and not explicit_context
+        and not _has_active_recording_parent()
+    )
 
 
 def _resolve_root_workflow_name() -> str:
@@ -860,13 +932,9 @@ class _AutoRootTracer:
         tracer = object.__getattribute__(self, "_tracer")
         attributes = attributes or {}
         kind = str(attributes.get("neatlogs.span.kind", "")).lower()
+        is_parentless = "context" not in kwargs and not _has_active_recording_parent()
 
-        needs_root = (
-            _auto_root_enabled()
-            and kind not in _ROOT_KINDS
-            and "context" not in kwargs  # explicit-context callers opt out
-            and not _has_active_recording_parent()
-        )
+        needs_root = _should_auto_root(kind, explicit_context="context" in kwargs)
         if not needs_root:
             # A root-kind span (or auto-root disabled): still must not inherit a
             # FOREIGN active parent. If only a foreign span is active, detach so
@@ -876,7 +944,18 @@ class _AutoRootTracer:
                 foreign_kwargs = _neatlogs_root_kwargs()
                 if foreign_kwargs:
                     kwargs.update(foreign_kwargs)
-            return tracer.start_span(name=name, attributes=attributes, **kwargs)
+            span = tracer.start_span(name=name, attributes=attributes, **kwargs)
+            if is_parentless and kind in _ROOT_KINDS:
+                try:
+                    from .core.end_user import apply_end_user_attributes
+                    from .core.session import apply_session_attributes
+
+                    apply_wrap_context_attributes(span, is_root=True)
+                    apply_session_attributes(span, None, is_root=True)
+                    apply_end_user_attributes(span, None, None, is_root=True)
+                except Exception:
+                    pass
+            return span
 
         # If only a foreign span is active, start the auto-root in an empty context
         # so it doesn't inherit the foreign (non-neatlogs) parent.
