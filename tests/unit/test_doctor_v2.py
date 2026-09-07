@@ -968,6 +968,55 @@ def test_probe_stops_on_terminal_stage_receipt_with_safe_details(monkeypatch):
     assert "secret" not in json.dumps(result)
 
 
+def test_probe_classifies_dlq_without_optional_diagnostics_as_pipeline_failure(
+    monkeypatch,
+):
+    exporter = Exporter()
+
+    def get(*_args, **_kwargs):
+        return _json_response(
+            {
+                "error": "Trace processing failed",
+                "finalizationStatus": "dlq",
+                "message": "We couldn't finish preparing this trace. Please retry or contact support.",
+            },
+            409,
+        )
+
+    monkeypatch.setattr("neatlogs.doctor_v2.requests.get", get)
+    result = doctor_probe_v2(
+        api_key="local-key",
+        endpoint="http://localhost:4100",
+        timeout_seconds=1,
+        _exporter=exporter,
+    )
+
+    failure = next(check for check in result["checks"] if check["status"] == "fail")
+    assert result["first_failure"] == "INGESTION_PIPELINE_FAILED"
+    assert failure["reason_code"] == "INGESTION_PIPELINE_FAILED"
+    assert failure.get("details") is None
+
+
+def test_probe_rejects_dlq_without_required_error(monkeypatch):
+    exporter = Exporter()
+    monkeypatch.setattr(
+        "neatlogs.doctor_v2.requests.get",
+        lambda *_args, **_kwargs: _json_response(
+            {"finalizationStatus": "dlq"},
+            409,
+        ),
+    )
+
+    result = doctor_probe_v2(
+        api_key="local-key",
+        endpoint="http://localhost:4100",
+        timeout_seconds=1,
+        _exporter=exporter,
+    )
+
+    assert result["first_failure"] == "TRACE_READBACK_INVALID"
+
+
 def test_probe_ignores_unknown_or_malformed_stage_diagnostics(monkeypatch):
     exporter = Exporter()
 
@@ -1199,7 +1248,14 @@ def test_probe_does_not_retain_stale_details_for_malformed_terminal_receipt(monk
                 },
                 202,
             )
-        return _json_response({"ingestionDiagnostics": {"protocolVersion": "v2"}}, 409)
+        return _json_response(
+            {
+                "error": "Trace processing failed",
+                "finalizationStatus": "dlq",
+                "ingestionDiagnostics": {"protocolVersion": "v2"},
+            },
+            409,
+        )
 
     monkeypatch.setattr("neatlogs.doctor_v2.requests.get", get)
     monkeypatch.setattr("neatlogs.doctor_v2.time.sleep", lambda *_: None)

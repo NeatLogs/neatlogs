@@ -1285,10 +1285,23 @@ def doctor_probe_v2(
                     value = None
                 current_diagnostics = _ingestion_diagnostic_details(value)
                 if response.status_code == 409:
-                    if (
-                        current_diagnostics is None
-                        or current_diagnostics["ingestion_state"] != "failed"
-                    ):
+                    terminal_value = value if isinstance(value, dict) else {}
+                    if terminal_value.get("finalizationStatus") == "dlq":
+                        diagnostics_present = "ingestionDiagnostics" in terminal_value
+                        valid_terminal = (
+                            isinstance(terminal_value.get("error"), str)
+                            and (
+                                "message" not in terminal_value
+                                or isinstance(terminal_value["message"], str)
+                            )
+                            and (not diagnostics_present or current_diagnostics is not None)
+                        )
+                    else:
+                        valid_terminal = (
+                            current_diagnostics is not None
+                            and current_diagnostics["ingestion_state"] == "failed"
+                        )
+                    if not valid_terminal:
                         raise _ProbeReadbackError(
                             "TRACE_READBACK_INVALID",
                             "Trace read-back returned an invalid terminal receipt",
