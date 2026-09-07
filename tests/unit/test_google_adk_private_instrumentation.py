@@ -21,6 +21,7 @@ async def _run_local_adk(
     started: asyncio.Event | None = None,
     release: asyncio.Event | None = None,
     sync: bool = False,
+    after_wrap=None,
 ) -> str:
     from google.adk.agents import LlmAgent
     from google.adk.models.base_llm import BaseLlm
@@ -100,6 +101,8 @@ async def _run_local_adk(
     )
     if wrapped:
         runner = neatlogs.wrap(runner)
+    if after_wrap is not None:
+        after_wrap()
 
     message = types.Content(
         role="user",
@@ -198,6 +201,161 @@ async def test_explicit_google_adk_wrap_activates_the_same_private_instrumentor(
     }
     assert {"CHAIN", "AGENT", "LLM"}.issubset(kinds)
     assert not _semantic_spans(foreign_exporter)
+
+
+@pytest.mark.asyncio
+async def test_google_adk_wrap_before_init_binds_private_provider_at_invocation():
+    private_provider = TracerProvider()
+    private_exporter = InMemorySpanExporter()
+    foreign_provider = TracerProvider()
+    foreign_exporter = InMemorySpanExporter()
+    foreign_provider.add_span_processor(SimpleSpanProcessor(foreign_exporter))
+    trace_api.set_tracer_provider(foreign_provider)
+
+    def initialize_after_wrap():
+        neatlogs.init(
+            api_key="test-key",
+            disable_export=True,
+            instrumentations=[],
+            tracer_provider=private_provider,
+            register_shutdown_handlers=False,
+        )
+        private_provider.add_span_processor(SimpleSpanProcessor(private_exporter))
+
+    output = await _run_local_adk(
+        wrapped=True,
+        suffix="wrap_before_init",
+        after_wrap=initialize_after_wrap,
+    )
+
+    assert output == "answer-wrap_before_init"
+    spans = private_exporter.get_finished_spans()
+    kinds = {
+        span.attributes.get("openinference.span.kind")
+        for span in spans
+        if span.attributes.get("openinference.span.kind")
+    }
+    assert {"CHAIN", "AGENT", "LLM"}.issubset(kinds)
+    assert any(span.name == "google_adk.runner.run_async" for span in spans)
+    assert not _semantic_spans(foreign_exporter)
+
+
+@pytest.mark.asyncio
+async def test_google_adk_client_activation_owns_root_and_semantic_children():
+    default_exporter, foreign_exporter = _init_adk(automatic=True)
+    client_provider = TracerProvider()
+    client_exporter = InMemorySpanExporter()
+    client_provider.add_span_processor(SimpleSpanProcessor(client_exporter))
+    client = neatlogs.Client(
+        api_key="client-key",
+        workflow_name="client-workflow",
+        disable_export=True,
+        tracer_provider=client_provider,
+    )
+
+    try:
+        with client.activate():
+            output = await _run_local_adk(wrapped=True, suffix="client")
+    finally:
+        client.shutdown()
+
+    assert output == "answer-client"
+    client_spans = client_exporter.get_finished_spans()
+    assert any(span.name == "google_adk.runner.run_async" for span in client_spans)
+    kinds = {
+        span.attributes.get("openinference.span.kind")
+        for span in client_spans
+        if span.attributes.get("openinference.span.kind")
+    }
+    assert {"CHAIN", "AGENT", "LLM"}.issubset(kinds)
+
+    wrapper = next(span for span in client_spans if span.name == "google_adk.runner.run_async")
+    chain = next(
+        span for span in client_spans if span.attributes.get("openinference.span.kind") == "CHAIN"
+    )
+    assert chain.parent.span_id == wrapper.context.span_id
+    assert not _semantic_spans(default_exporter)
+    assert not _semantic_spans(foreign_exporter)
+
+
+@pytest.mark.asyncio
+async def test_automatic_google_adk_uses_the_active_client_provider():
+    default_exporter, foreign_exporter = _init_adk(automatic=True)
+    client_provider = TracerProvider()
+    client_exporter = InMemorySpanExporter()
+    client_provider.add_span_processor(SimpleSpanProcessor(client_exporter))
+    client = neatlogs.Client(
+        api_key="client-key",
+        workflow_name="client-workflow",
+        disable_export=True,
+        tracer_provider=client_provider,
+    )
+
+    try:
+        with client.activate():
+            with neatlogs.trace("automatic-client-workflow", kind="WORKFLOW"):
+                output = await _run_local_adk(wrapped=False, suffix="automatic_client")
+    finally:
+        client.shutdown()
+
+    assert output == "answer-automatic_client"
+    kinds = {
+        span.attributes.get("openinference.span.kind")
+        for span in client_exporter.get_finished_spans()
+        if span.attributes.get("openinference.span.kind")
+    }
+    assert {"CHAIN", "AGENT", "LLM"}.issubset(kinds)
+    assert not _semantic_spans(default_exporter)
+    assert not _semantic_spans(foreign_exporter)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_google_adk_clients_keep_semantic_children_context_local():
+    _init_adk(automatic=True)
+    first_provider = TracerProvider()
+    second_provider = TracerProvider()
+    first_exporter = InMemorySpanExporter()
+    second_exporter = InMemorySpanExporter()
+    first_provider.add_span_processor(SimpleSpanProcessor(first_exporter))
+    second_provider.add_span_processor(SimpleSpanProcessor(second_exporter))
+    first = neatlogs.Client(
+        api_key="first-key",
+        workflow_name="first-client",
+        disable_export=True,
+        tracer_provider=first_provider,
+    )
+    second = neatlogs.Client(
+        api_key="second-key",
+        workflow_name="second-client",
+        disable_export=True,
+        tracer_provider=second_provider,
+    )
+
+    async def run(client, suffix):
+        with client.activate():
+            return await _run_local_adk(wrapped=True, suffix=suffix)
+
+    try:
+        outputs = await asyncio.gather(run(first, "first_client"), run(second, "second_client"))
+    finally:
+        first.shutdown()
+        second.shutdown()
+
+    assert outputs == ["answer-first_client", "answer-second_client"]
+    first_llm = [
+        span
+        for span in first_exporter.get_finished_spans()
+        if span.attributes.get("openinference.span.kind") == "LLM"
+    ]
+    second_llm = [
+        span
+        for span in second_exporter.get_finished_spans()
+        if span.attributes.get("openinference.span.kind") == "LLM"
+    ]
+    assert len(first_llm) == 1
+    assert len(second_llm) == 1
+    assert "question-first_client" in first_llm[0].attributes["input.value"]
+    assert "question-second_client" in second_llm[0].attributes["input.value"]
 
 
 @pytest.mark.asyncio
