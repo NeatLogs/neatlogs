@@ -28,9 +28,7 @@ def pipeline():
 
 
 def llm(tracer, name="chat.completions"):
-    with tracer.start_as_current_span(
-        name, attributes={"openinference.span.kind": "LLM"}
-    ):
+    with tracer.start_as_current_span(name, attributes={"openinference.span.kind": "LLM"}):
         pass
 
 
@@ -66,8 +64,7 @@ def test_nested_context_restores_outer_identity_and_ignores_group_names(pipeline
     llm(tracer, "chat.after")
     names = {s.name: s.attributes.get(KEY) for s in exporter.get_finished_spans()}
     assert {
-        key: names[key]
-        for key in ("chat.group", "chat.inner", "chat.outer", "chat.after")
+        key: names[key] for key in ("chat.group", "chat.inner", "chat.outer", "chat.after")
     } == {
         "chat.group": "outer",
         "chat.inner": "inner",
@@ -97,9 +94,7 @@ def test_canonical_system_keyword_wins_over_legacy_alias(pipeline):
     tracer, exporter = pipeline
     with trace("canonical", system_prompt_template="New", prompt_template="Old"):
         llm(tracer)
-    child = next(
-        s for s in exporter.get_finished_spans() if s.name == "chat.completions"
-    )
+    child = next(s for s in exporter.get_finished_spans() if s.name == "chat.completions")
     assert child.attributes[KEY] == "canonical"
     assert child.attributes["neatlogs.llm.prompt_template"] == "New"
 
@@ -110,9 +105,7 @@ def test_exception_restores_outer_identity(pipeline):
         with pytest.raises(ValueError), trace("inner", system_prompt_template="Inner"):
             raise ValueError("test")
         llm(tracer)
-    child = next(
-        s for s in exporter.get_finished_spans() if s.name == "chat.completions"
-    )
+    child = next(s for s in exporter.get_finished_spans() if s.name == "chat.completions")
     assert child.attributes[KEY] == "outer"
 
 
@@ -123,9 +116,7 @@ def test_new_template_with_empty_name_does_not_borrow_outer_name(pipeline):
         trace("", system_prompt_template="Independent"),
     ):
         llm(tracer)
-    child = next(
-        s for s in exporter.get_finished_spans() if s.name == "chat.completions"
-    )
+    child = next(s for s in exporter.get_finished_spans() if s.name == "chat.completions")
     assert KEY not in child.attributes
     assert child.attributes["neatlogs.llm.prompt_template"] == "Independent"
 
@@ -192,8 +183,6 @@ def test_streaming_child_keeps_identity_for_its_full_lifecycle(pipeline):
     ):
         for chunk in ("first", "second"):
             child.add_event("chunk", {"text": chunk})
-    child = next(
-        s for s in exporter.get_finished_spans() if s.name == "chat.completions.stream"
-    )
+    child = next(s for s in exporter.get_finished_spans() if s.name == "chat.completions.stream")
     assert child.attributes[KEY] == "streaming"
     assert len(child.events) == 2
