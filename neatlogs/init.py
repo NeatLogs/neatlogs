@@ -50,6 +50,7 @@ from .core.upload_authority import (
 from .core.upload_authority import uploads_enabled as resolve_uploads_enabled
 from .errors import NeatlogsConfigurationError
 from .instrumentation.manager import InstrumentationManager
+from .instrumentation.preprocessing import ensure_provider_preprocessor
 from .version import __version__
 
 logger = get_logger()
@@ -90,6 +91,15 @@ _session_config = {
 def is_debug_enabled() -> bool:
     """Return True if neatlogs was initialized with debug=True."""
     return _debug_mode
+
+
+def _instrument_library(library: str) -> bool:
+    """Activate one library through the current default instrumentation manager."""
+    manager = _instrumentation_manager
+    if manager is None:
+        return False
+    manager.instrument(libraries=[library])
+    return library in manager.instrumented
 
 
 def _trace_sampler(sample_rate: float) -> ParentBased:
@@ -540,6 +550,33 @@ def init(
     from ._wrap_utils import set_neatlogs_provider
 
     set_neatlogs_provider(provider)
+    ensure_provider_preprocessor(provider)
+
+    global _instrumentation_manager
+    manager = InstrumentationManager(
+        provider=provider,
+        debug=debug,
+        excluded_urls=endpoint,
+    )
+    _instrumentation_manager = manager
+    manager.prepare_span_processors(instrumentations)
+
+    # Strands converts its native GenAI spans in an on_end processor. It must run
+    # before Neatlogs' normalizer and exporter see those spans, but only when
+    # Strands is explicitly selected.
+    strands_module = sys.modules.get("neatlogs.strands")
+    wrapped_strands_agents = bool(
+        strands_module is not None
+        and getattr(strands_module, "has_wrapped_agents", lambda: False)()
+    )
+    if (instrumentations and "strands" in instrumentations) or wrapped_strands_agents:
+        try:
+            from .strands import instrument_strands
+
+            instrument_strands(provider)
+        except Exception as exc:
+            if debug:
+                logger.debug("Could not prepare Strands instrumentation: %s", exc)
 
     # NeatlogsSpanProcessor: pure pre-processing (attribute normalization + file logging)
     global _span_processor
@@ -707,16 +744,7 @@ def init(
     elif debug:
         logger.debug("Log capture disabled (pass capture_logs=True to enable)")
 
-    global _instrumentation_manager
-    manager = InstrumentationManager(
-        provider=provider,
-        debug=debug,
-        excluded_urls=endpoint,
-    )
-    _instrumentation_manager = manager
-
     manager.instrument_threading()
-    manager.instrument_http()
 
     if instrumentations:
         manager.instrument(libraries=instrumentations)
@@ -1116,6 +1144,15 @@ def _perform_shutdown(
             success = False
         _instrumentation_manager = None
 
+    if "neatlogs.strands" in sys.modules:
+        try:
+            from .strands import release_default_strands
+
+            if tracer_provider is not None:
+                release_default_strands(tracer_provider)
+        except Exception:
+            pass
+
     # Drop the cached wrapper tracer (used by wrap()/trace processors like the
     # OpenAI Agents one) so the next init() rebinds it to the new provider. Also
     # clear the registered neatlogs provider so a later init() starts clean.
@@ -1124,6 +1161,12 @@ def _perform_shutdown(
 
         reset_tracer()
         set_neatlogs_provider(None)
+    except Exception:
+        pass
+    try:
+        from .google_adk import _reset_google_adk_binding
+
+        _reset_google_adk_binding()
     except Exception:
         pass
 

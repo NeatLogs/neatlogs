@@ -14,6 +14,7 @@ from urllib.parse import unquote
 from opentelemetry import context as context_api
 from opentelemetry.context import Context
 from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor
+from opentelemetry.trace import SpanKind
 
 from .attribute_processor import UnifiedAttributeProcessor
 from .logger import get_logger
@@ -411,7 +412,7 @@ class NeatlogsSpanProcessor(SpanProcessor):
                 and not self._raw_log_file_handle.closed
             ):
                 try:
-                    self._raw_log_file_handle.write(span.to_json() + "\n")
+                    self._raw_log_file_handle.write(self._safe_raw_span_json(span) + "\n")
                     self._raw_log_file_handle.flush()
                 except Exception as e:
                     logger.warning(f"Failed to write span to raw log file: {e}")
@@ -559,6 +560,20 @@ class NeatlogsSpanProcessor(SpanProcessor):
                                 isinstance(_i, (str, int, float, bool)) for _i in _v
                             ):
                                 span_attrs[_k] = list(_v)
+                        if final_attrs.get("neatlogs.span.kind") == "http":
+                            self.unified_processor.sanitize_http_attributes(span_attrs)
+                            for key in (
+                                "input.value",
+                                "input.mime_type",
+                                "output.value",
+                                "output.mime_type",
+                                "neatlogs.http.input",
+                                "neatlogs.http.input_mime_type",
+                                "neatlogs.http.output",
+                                "neatlogs.http.output_mime_type",
+                            ):
+                                if key not in final_attrs:
+                                    span_attrs.pop(key, None)
                     finally:
                         if was_immutable:
                             span_attrs._immutable = True
@@ -752,7 +767,9 @@ class NeatlogsSpanProcessor(SpanProcessor):
         normalization, so it reads the raw input.value/output.value keys.
         """
         try:
-            attrs = span.attributes or {}
+            attrs = dict(span.attributes or {})
+            if span.kind == SpanKind.CLIENT and self.unified_processor._looks_like_http(attrs):
+                self.unified_processor._add_http_canonical_io(attrs)
 
             def _nonempty(key):
                 v = attrs.get(key)
@@ -824,6 +841,17 @@ class NeatlogsSpanProcessor(SpanProcessor):
         except Exception as exc:
             if self.debug:
                 logger.debug(f"[SpanProcessor] Root I/O backfill skipped: {exc}")
+
+    def _safe_raw_span_json(self, span: ReadableSpan) -> str:
+        payload = json.loads(span.to_json())
+        attrs = payload.get("attributes") or {}
+        if span.kind == SpanKind.CLIENT and self.unified_processor._looks_like_http(attrs):
+            self.unified_processor._add_http_canonical_io(attrs)
+            for event in payload.get("events") or ():
+                event_attrs = event.get("attributes") if isinstance(event, dict) else None
+                if isinstance(event_attrs, dict):
+                    self.unified_processor.sanitize_http_attributes(event_attrs)
+        return json.dumps(payload)
 
     @staticmethod
     def _serialize_span_events(span: ReadableSpan) -> List[Dict[str, Any]]:

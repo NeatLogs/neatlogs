@@ -11,6 +11,7 @@ import atexit
 import contextlib
 import math
 import os
+import sys
 import threading
 import time
 from collections.abc import Iterator
@@ -53,6 +54,7 @@ from .core.upload_authority import (
 )
 from .core.upload_authority import uploads_enabled as resolve_uploads_enabled
 from .errors import NeatlogsConfigurationError
+from .instrumentation.preprocessing import ensure_provider_preprocessor
 from .version import __version__
 
 
@@ -153,6 +155,8 @@ class Client:
                 self.tracer_provider._resource = self.tracer_provider.resource.merge(resource)
             except Exception:
                 pass
+
+        ensure_provider_preprocessor(self.tracer_provider)
 
         self._span_processor = NeatlogsSpanProcessor(
             mask=mask,
@@ -399,6 +403,13 @@ class Client:
             )
             if not completed:
                 success = False
+        if "neatlogs.strands" in sys.modules:
+            try:
+                from .strands import release_strands
+
+                release_strands(self.tracer_provider, self)
+            except Exception:
+                pass
         if self._owns_provider:
             completed, _ = bounded_call(
                 self.tracer_provider.shutdown,

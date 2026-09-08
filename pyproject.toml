@@ -61,7 +61,7 @@ dependencies = [
     "openinference-instrumentation-dspy>=0.1.32",
     "openinference-instrumentation-agno>=0.1.25",
     "openinference-instrumentation-openai-agents>=1.4.0",
-    "openinference-instrumentation-pydantic-ai>=0.1.9",
+    "openinference-instrumentation-pydantic-ai>=0.1.20",
     "openinference-instrumentation-smolagents>=0.1.21",
     "openinference-instrumentation-guardrails>=0.1.10",
     "openinference-instrumentation-haystack>=0.1.29",
@@ -71,6 +71,7 @@ dependencies = [
     "openinference-instrumentation-google-adk>=0.1.8",
     "openinference-instrumentation-autogen-agentchat>=0.1.6",
     "openinference-instrumentation-llama-index>=4.3.9",
+    "openinference-instrumentation-strands-agents>=0.1.7",
 ]
 
 [project.optional-dependencies]
@@ -155,7 +156,8 @@ portkey = [
     "portkey-ai>=1.0.0",
 ]
 pydantic-ai = [
-    "pydantic-ai>=0.0.9",
+    "pydantic-ai>=0.7.5",
+    "openinference-instrumentation-pydantic-ai[instruments]>=0.1.20",
 ]
 smolagents = [
     "smolagents>=1.0.0",
@@ -173,6 +175,9 @@ vertex-ai = [
 ]
 autogen-agentchat = [
     "autogen-agentchat>=0.4.0",
+]
+strands = [
+    "strands-agents>=1.19.0",
 ]
 milvus = [
     # pymilvus and milvus-lite must be the same minor version to avoid a gRPC hang
