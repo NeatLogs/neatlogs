@@ -55,6 +55,8 @@ from .version import __version__
 
 logger = get_logger()
 
+_UNSUPPORTED_HTTP_INSTRUMENTATIONS = frozenset({"http", "requests", "httpx", "urllib3", "aiohttp"})
+
 
 _initialized = False
 _init_signature = None
@@ -110,6 +112,20 @@ def _trace_sampler(sample_rate: float) -> ParentBased:
     if not math.isfinite(rate) or rate < 0.0 or rate > 1.0:
         raise NeatlogsConfigurationError("sample_rate must be a finite number from 0.0 to 1.0")
     return ParentBased(root=TraceIdRatioBased(rate))
+
+
+def _validate_instrumentations(instrumentations: Optional[List[str]]) -> None:
+    requested = {
+        str(item).strip().lower() for item in (instrumentations or []) if str(item).strip()
+    }
+    unsupported = sorted(requested & _UNSUPPORTED_HTTP_INSTRUMENTATIONS)
+    if unsupported:
+        raise NeatlogsConfigurationError(
+            "HTTP client instrumentation is not supported: "
+            + ", ".join(unsupported)
+            + ". Instrument the provider SDK or wrap the operation in a semantic "
+            "LLM, TOOL, RETRIEVER, or other Neatlogs span instead."
+        )
 
 
 def _restore_shutdown_signal_handlers() -> None:
@@ -284,7 +300,9 @@ def init(
                  wrapper-only code via ``with neatlogs.identify(session_id=...,
                  end_user_id=...)``.
         tags: Global tags for all traces (list of strings only, e.g., ['production', 'api-v2'])
-        instrumentations: Specific libraries to instrument
+        instrumentations: Specific AI/provider/framework libraries to instrument.
+              HTTP clients are intentionally unsupported; trace the semantic
+              operation around a raw transport call instead.
         sample_rate: Trace sampling rate (0.0-1.0)
         batch_size: Max spans per batch
         flush_interval: Seconds between batch flushes
@@ -342,6 +360,7 @@ def init(
     """
     global _initialized, _init_signature, _shutdown_worker
 
+    _validate_instrumentations(instrumentations)
     uploads_enabled_resolved = resolve_uploads_enabled(
         uploads_enabled, os.getenv("NEATLOGS_UPLOADS_ENABLED")
     )
@@ -602,12 +621,10 @@ def init(
             compression=Compression.Gzip,
             session=build_otlp_session(),
         )
-        # Wrap the exporter so rootless infra-HTTP auto-spans (boot pings, dependency
-        # warmups, outbound fetches outside any traced request) are never sent — on
-        # their own they're junk rootless traces the backend can't simplify. Nested
-        # HTTP spans (with a parent) still export normally.
+        # HTTP transport spans are never part of the Neatlogs semantic model. Drop
+        # any that enter a caller-supplied provider before they reach our backend.
         from .core.masking_exporter import MaskingSpanExporter
-        from .core.span_processor import is_rootless_infra_http
+        from .core.span_processor import is_http_span
 
         class _FilteredOTLPExporter:
             def __init__(self, inner):
@@ -616,7 +633,7 @@ def init(
             def export(self, spans):
                 from opentelemetry.sdk.trace.export import SpanExportResult
 
-                kept = [s for s in spans if not is_rootless_infra_http(s)]
+                kept = [s for s in spans if not is_http_span(s)]
                 if not kept:
                     return SpanExportResult.SUCCESS
                 return self._inner.export(kept)
@@ -638,10 +655,11 @@ def init(
             _media_store,
             diagnostics=_delivery_diagnostics,
         )
+        filtered_limited_span_exporter = _FilteredOTLPExporter(limited_span_exporter)
         batch_processor = ObservableBatchSpanProcessor(
             _FilteredOTLPExporter(
                 MaskingSpanExporter(
-                    limited_span_exporter,
+                    filtered_limited_span_exporter,
                     mask,
                     diagnostics=_delivery_diagnostics,
                     media_store=_media_store,

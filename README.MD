@@ -251,7 +251,6 @@ Pass keys to `instrumentations` in `neatlogs.init()`. Install extras when noted.
 | OpenSearch | `opensearch` | Auto-instrumented when installed |
 | Elasticsearch | `elasticsearch` | Auto-instrumented when installed |
 | Marqo | `marqo` | Auto-instrumented when installed |
-| HTTP clients | `requests`, `httpx`, `urllib3`, `aiohttp` | Opt in with the matching `instrumentations` key |
 
 ---
 

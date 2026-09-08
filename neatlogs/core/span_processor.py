@@ -54,14 +54,9 @@ def _is_neatlogs_scope_span(span: Any) -> bool:
         return False
 
 
-# Instrumentation scopes that produce HTTP-client auto-spans for context
-# propagation. An HTTP span fired INSIDE a workflow nests under it (has a parent);
-# an HTTP call at boot / in infra plumbing (health pings, dependency warmups,
-# outbound fetches outside any traced request) has NO parent → it would become a
-# rootless single-span trace. Those are pure noise: they carry no agentic content
-# and the backend can't build a simplified view from them, so it requeues them
-# forever. We treat HTTP auto-instrumentation as propagation-only and DROP a span
-# that is BOTH rootless AND an HTTP-scope span (keeping nested HTTP spans intact).
+# Instrumentation scopes that produce HTTP transport spans. Neatlogs does not
+# export transport spans; provider wrappers and manual semantic spans capture the
+# meaningful LLM/tool/retrieval operation instead.
 _HTTP_INSTRUMENTATION_SCOPES = (
     "opentelemetry.instrumentation.urllib",  # covers urllib and urllib3
     "opentelemetry.instrumentation.requests",
@@ -70,68 +65,56 @@ _HTTP_INSTRUMENTATION_SCOPES = (
     "opentelemetry.instrumentation.aiohttp_server",
 )
 
-_AGENTIC_KINDS = {
-    "WORKFLOW",
-    "AGENT",
-    "CHAIN",
-    "TOOL",
-    "RETRIEVER",
-    "EMBEDDING",
-    "GUARDRAIL",
-    "LLM",
-    "MCP_TOOL",
-}
+_HTTP_ATTRIBUTE_KEYS = (
+    "http.method",
+    "http.request.method",
+    "http.url",
+    "http.route",
+    "url.full",
+)
 
-# Hosts for third-party framework telemetry that our HTTP auto-instrumentation
-# would otherwise capture as junk spans (often on their own rootless trace). We
-# suppress CrewAI's telemetry at the source (env vars), but a framework may fire
-# such calls before our env takes effect or via a path we don't gate — drop the
-# resulting HTTP spans here as defense-in-depth so they never pollute a trace.
-_TELEMETRY_HTTP_HOSTS = (
-    "telemetry.crewai.com",
-    "app.crewai.com",
+_SEMANTIC_SPAN_KINDS = frozenset(
+    {
+        "WORKFLOW",
+        "AGENT",
+        "CHAIN",
+        "TOOL",
+        "RETRIEVER",
+        "EMBEDDING",
+        "GUARDRAIL",
+        "LLM",
+        "RERANKER",
+        "VECTOR_STORE",
+        "TASK",
+        "EVALUATOR",
+        "LOG",
+        "MEMORY",
+        "MCP_TOOL",
+    }
 )
 
 
-def _http_span_host(span) -> str:
-    """Best-effort host/URL string for an HTTP-client span, across OTel attr names."""
-    attrs = span.attributes or {}
-    for key in ("server.address", "net.peer.name", "http.host", "url.full", "http.url"):
-        val = attrs.get(key)
-        if val:
-            return str(val)
-    return ""
-
-
-def is_telemetry_http(span) -> bool:
-    """True if `span` is an HTTP-client span calling a known framework-telemetry host."""
+def is_http_span(span) -> bool:
+    """Return whether a span represents HTTP transport rather than AI semantics."""
     try:
-        scope = getattr(span, "instrumentation_scope", None)
-        scope_name = getattr(scope, "name", "") or ""
-        if not scope_name.startswith(_HTTP_INSTRUMENTATION_SCOPES):
-            return False
-        target = _http_span_host(span)
-        return any(host in target for host in _TELEMETRY_HTTP_HOSTS)
-    except Exception:
-        return False
-
-
-def is_rootless_infra_http(span) -> bool:
-    """True if `span` is a root (no parent) HTTP-client auto-span with no agentic
-    kind — i.e. a boot/infra HTTP ping that would otherwise create a junk rootless
-    trace. Nested HTTP spans (parent set) and any agentic span are NEVER dropped."""
-    try:
-        if span.parent is not None:
-            return False  # nested under something — keep (propagation child)
-        scope = getattr(span, "instrumentation_scope", None)
-        scope_name = getattr(scope, "name", "") or ""
-        if not scope_name.startswith(_HTTP_INSTRUMENTATION_SCOPES):
-            return False
         attrs = span.attributes or {}
-        kind = attrs.get("openinference.span.kind") or attrs.get("neatlogs.span.kind") or ""
-        if str(kind).upper() in _AGENTIC_KINDS:
-            return False  # explicitly an agentic root — keep
-        return True
+        neatlogs_kind = str(attrs.get("neatlogs.span.kind") or "").upper()
+        openinference_kind = str(attrs.get("openinference.span.kind") or "").upper()
+        if neatlogs_kind == "HTTP":
+            return True
+        if neatlogs_kind in _SEMANTIC_SPAN_KINDS:
+            return False
+        if openinference_kind == "HTTP":
+            return True
+        if openinference_kind in _SEMANTIC_SPAN_KINDS:
+            return False
+        scope = getattr(span, "instrumentation_scope", None)
+        scope_name = getattr(scope, "name", "") or ""
+        if scope_name.startswith(_HTTP_INSTRUMENTATION_SCOPES):
+            return True
+        return getattr(span, "kind", None) == SpanKind.CLIENT and any(
+            key in attrs for key in _HTTP_ATTRIBUTE_KEYS
+        )
     except Exception:
         return False
 
@@ -368,28 +351,12 @@ class NeatlogsSpanProcessor(SpanProcessor):
         if span.name == "neatlogs.trace.complete":
             return
 
-        # Drop rootless infra-HTTP auto-spans (boot pings, dependency warmups,
-        # outbound fetches outside any traced request). They have no parent and no
-        # agentic content, so on their own they're a junk rootless trace the backend
-        # can't simplify (and would requeue forever). Nested HTTP spans keep their
-        # parent and are untouched. We do NOT emit a completion marker for these, so
-        # the backend never tries to finalize a root-less HTTP-only trace.
-        if is_rootless_infra_http(span):
+        # Never normalize, backfill from, log, or export HTTP transport spans.
+        if is_http_span(span):
             if self.debug:
                 logger.debug(
-                    f"[SpanProcessor] Dropping rootless infra-HTTP span '{span.name}' "
+                    f"[SpanProcessor] Dropping HTTP transport span '{span.name}' "
                     f"(scope={getattr(getattr(span, 'instrumentation_scope', None), 'name', '')})"
-                )
-            return
-
-        # Drop HTTP spans that are calls to third-party framework telemetry
-        # endpoints (e.g. CrewAI's app.crewai.com batch tracing). These are noise
-        # and can spawn a stray second trace; suppress regardless of nesting.
-        if is_telemetry_http(span):
-            if self.debug:
-                logger.debug(
-                    f"[SpanProcessor] Dropping framework-telemetry HTTP span '{span.name}' "
-                    f"(host={_http_span_host(span)})"
                 )
             return
 
