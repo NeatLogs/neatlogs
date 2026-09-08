@@ -313,13 +313,6 @@
             "target": "neatlogs.llm.response_id"
           },
           "prompt_template": {
-            "name": {
-              "sources": [
-                "neatlogs.llm.prompt_template.name",
-                "llm.prompt_template.name"
-              ],
-              "target": "neatlogs.llm.prompt_template.name"
-            },
             "template": {
               "sources": [
                 "neatlogs.prompt.template",

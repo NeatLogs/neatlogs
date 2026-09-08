@@ -11,7 +11,7 @@ from neatlogs._wrap_utils import get_provider_tracer, set_neatlogs_provider
 from neatlogs.core.context import trace
 from neatlogs.core.span_processor import NeatlogsSpanProcessor
 
-KEY = "neatlogs.llm.prompt_template.name"
+KEY = "neatlogs.llm.prompt_key"
 
 
 @pytest.fixture
@@ -27,8 +27,9 @@ def pipeline():
     provider.shutdown()
 
 
-def llm(tracer, name="chat.completions"):
-    with tracer.start_as_current_span(name, attributes={"openinference.span.kind": "LLM"}):
+def llm(tracer, name="chat.completions", attributes=None):
+    span_attributes = {"openinference.span.kind": "LLM", **(attributes or {})}
+    with tracer.start_as_current_span(name, attributes=span_attributes):
         pass
 
 
@@ -97,6 +98,15 @@ def test_canonical_system_keyword_wins_over_legacy_alias(pipeline):
     child = next(s for s in exporter.get_finished_spans() if s.name == "chat.completions")
     assert child.attributes[KEY] == "canonical"
     assert child.attributes["neatlogs.llm.prompt_template"] == "New"
+
+
+@pytest.mark.parametrize("attribute", ["neatlogs.llm.prompt_key", "traceloop.prompt.key"])
+def test_existing_wire_prompt_key_wins_over_trace_name(pipeline, attribute):
+    tracer, exporter = pipeline
+    with trace("wrapper-name", system_prompt_template="Template"):
+        llm(tracer, attributes={attribute: "provider-key"})
+    child = next(s for s in exporter.get_finished_spans() if s.name == "chat.completions")
+    assert child.attributes[KEY] == "provider-key"
 
 
 def test_exception_restores_outer_identity(pipeline):
