@@ -109,6 +109,19 @@ class InstrumentationManager:
                 logger.info(f"⏭️  Skipped: {library} (not installed)")
             return
 
+        if library == "google_adk":
+            try:
+                from ..google_adk import _ensure_google_adk_bound
+
+                if _ensure_google_adk_bound():
+                    self.instrumented.add(library)
+                    if self.debug:
+                        logger.info("google_adk (OpenInference)")
+            except Exception as e:
+                if self.debug:
+                    logger.warning(f"google_adk (OpenInference): {e}")
+            return
+
         info = INSTRUMENTATION_REGISTRY["libraries"].get(library)
         if not info:
             if self.debug:
@@ -198,6 +211,9 @@ class InstrumentationManager:
 
             # Post-instrument patches for OpenInference libraries
             if convention == "openinference":
+                # Some adapters import helper modules only from instrument().
+                # Refresh their direct OTel function references after that import.
+                provider_for_openinference(self.provider)
                 if library == "openai":
                     self._patch_openinference_openai_request_extras()
                     self._patch_openinference_openai_response_extras()
@@ -243,6 +259,14 @@ class InstrumentationManager:
         except Exception:
             pass
         for library in list(self.instrumented):
+            if library == "google_adk":
+                try:
+                    from ..google_adk import _reset_google_adk_binding
+
+                    _reset_google_adk_binding()
+                except Exception:
+                    pass
+                continue
             info = INSTRUMENTATION_REGISTRY["libraries"].get(library) or {}
             for convention in ("neatlogs", "openinference", "openllmetry"):
                 package_name = info.get(convention)
@@ -1549,6 +1573,7 @@ class InstrumentationManager:
             special_imports = {
                 "google_genai": "google.genai",
                 "google_generativeai": "google.generativeai",
+                "google_adk": "google.adk",
                 # Vertex AI (neatlogs custom) runs through the google-genai SDK in
                 # Vertex mode, not the legacy `vertexai` / google-cloud-aiplatform pkg.
                 "vertex_ai": "google.genai",
