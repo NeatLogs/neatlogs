@@ -132,6 +132,9 @@ def trace(
     # in isolated mode.
     from .._wrap_utils import (
         _neatlogs_root_kwargs,
+        _resolve_root_workflow_name,
+        _should_auto_root,
+        apply_wrap_context_attributes,
         attach_as_current,
     )
     from .._wrap_utils import detach as _nl_detach
@@ -167,8 +170,6 @@ def trace(
     from .._wrap_utils import _has_active_recording_parent
 
     is_in_active_trace = _has_active_recording_parent()
-
-    should_create_root_trace = session_id and not is_in_active_trace
 
     template_string = None
     is_prompt_template_obj = False
@@ -238,14 +239,37 @@ def trace(
     is_root = not is_in_active_trace
     ctx_token = attach(ambient_ctx)
     stdout_ctx = _CaptureStdoutContext() if capture_stdout else None
-    span = tracer.start_span(name, context=parent_ctx)
+    span_kind = kind or "CHAIN"
+    auto_root = None
+    auto_root_token = None
+    if is_root and _should_auto_root(span_kind):
+        auto_root = tracer.start_span(
+            _resolve_root_workflow_name(),
+            context=parent_ctx,
+            attributes={"neatlogs.span.kind": "workflow", "neatlogs.auto_root": True},
+        )
+        apply_wrap_context_attributes(auto_root, is_root=True)
+        apply_session_attributes(auto_root, session_id, is_root=True)
+        apply_end_user_attributes(auto_root, end_user_id, end_user_metadata, is_root=True)
+        auto_root_token = attach_as_current(auto_root)
+        parent_ctx = otel_trace.set_span_in_context(auto_root, parent_ctx)
+    try:
+        span = tracer.start_span(name, context=parent_ctx)
+    except Exception:
+        if auto_root_token is not None:
+            _nl_detach(auto_root_token)
+        if auto_root is not None:
+            auto_root.end()
+        detach(ctx_token)
+        raise
     span_token = attach_as_current(span)
     try:
         logger.debug(f"[trace] Creating {'root' if is_root else 'child'} span '{name}'")
         _set_span_attributes(span, kind, template_string, prompt_variables, version, attributes)
         # Session/end-user belong to the trace root only.
-        apply_session_attributes(span, session_id, is_root=is_root)
-        apply_end_user_attributes(span, end_user_id, end_user_metadata, is_root=is_root)
+        span_is_root = is_root and auto_root is None
+        apply_session_attributes(span, session_id, is_root=span_is_root)
+        apply_end_user_attributes(span, end_user_id, end_user_metadata, is_root=span_is_root)
         if mask is not None:
             from .mask import register_mask
 
@@ -262,7 +286,13 @@ def trace(
                 stdout_ctx.__exit__(None, None, None)
     finally:
         _nl_detach(span_token)
-        span.end()
+        try:
+            span.end()
+        finally:
+            if auto_root_token is not None:
+                _nl_detach(auto_root_token)
+            if auto_root is not None:
+                auto_root.end()
         if is_prompt_template_obj:
             PromptContext.clear()
         if is_user_prompt_template_obj:

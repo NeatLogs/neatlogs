@@ -93,6 +93,15 @@ def is_debug_enabled() -> bool:
     return _debug_mode
 
 
+def _instrument_library(library: str) -> bool:
+    """Activate one library through the current default instrumentation manager."""
+    manager = _instrumentation_manager
+    if manager is None:
+        return False
+    manager.instrument(libraries=[library])
+    return library in manager.instrumented
+
+
 def _trace_sampler(sample_rate: float) -> ParentBased:
     """Validate one trace-level rate and preserve the parent's sampling decision."""
     if isinstance(sample_rate, bool) or not isinstance(sample_rate, (int, float)):
@@ -719,7 +728,6 @@ def init(
         logger.debug("Log capture disabled (pass capture_logs=True to enable)")
 
     manager.instrument_threading()
-    manager.instrument_http()
 
     if instrumentations:
         manager.instrument(libraries=instrumentations)
@@ -1127,6 +1135,12 @@ def _perform_shutdown(
 
         reset_tracer()
         set_neatlogs_provider(None)
+    except Exception:
+        pass
+    try:
+        from .google_adk import _reset_google_adk_binding
+
+        _reset_google_adk_binding()
     except Exception:
         pass
 
