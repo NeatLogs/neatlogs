@@ -552,6 +552,15 @@ def init(
     set_neatlogs_provider(provider)
     ensure_provider_preprocessor(provider)
 
+    global _instrumentation_manager
+    manager = InstrumentationManager(
+        provider=provider,
+        debug=debug,
+        excluded_urls=endpoint,
+    )
+    _instrumentation_manager = manager
+    manager.prepare_span_processors(instrumentations)
+
     # Strands converts its native GenAI spans in an on_end processor. It must run
     # before Neatlogs' normalizer and exporter see those spans, but only when
     # Strands is explicitly selected.
@@ -734,14 +743,6 @@ def init(
                 )
     elif debug:
         logger.debug("Log capture disabled (pass capture_logs=True to enable)")
-
-    global _instrumentation_manager
-    manager = InstrumentationManager(
-        provider=provider,
-        debug=debug,
-        excluded_urls=endpoint,
-    )
-    _instrumentation_manager = manager
 
     manager.instrument_threading()
 
