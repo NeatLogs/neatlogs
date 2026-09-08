@@ -744,7 +744,6 @@ def init(
     _instrumentation_manager = manager
 
     manager.instrument_threading()
-    manager.instrument_http()
 
     if instrumentations:
         manager.instrument(libraries=instrumentations)
@@ -1161,6 +1160,12 @@ def _perform_shutdown(
 
         reset_tracer()
         set_neatlogs_provider(None)
+    except Exception:
+        pass
+    try:
+        from .google_adk import _reset_google_adk_binding
+
+        _reset_google_adk_binding()
     except Exception:
         pass
 
