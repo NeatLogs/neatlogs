@@ -11,6 +11,7 @@ import atexit
 import contextlib
 import math
 import os
+import sys
 import threading
 import time
 from collections.abc import Iterator
@@ -402,6 +403,13 @@ class Client:
             )
             if not completed:
                 success = False
+        if "neatlogs.strands" in sys.modules:
+            try:
+                from .strands import release_strands
+
+                release_strands(self.tracer_provider, self)
+            except Exception:
+                pass
         if self._owns_provider:
             completed, _ = bounded_call(
                 self.tracer_provider.shutdown,

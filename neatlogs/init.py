@@ -561,6 +561,23 @@ def init(
     _instrumentation_manager = manager
     manager.prepare_span_processors(instrumentations)
 
+    # Strands converts its native GenAI spans in an on_end processor. It must run
+    # before Neatlogs' normalizer and exporter see those spans, but only when
+    # Strands is explicitly selected.
+    strands_module = sys.modules.get("neatlogs.strands")
+    wrapped_strands_agents = bool(
+        strands_module is not None
+        and getattr(strands_module, "has_wrapped_agents", lambda: False)()
+    )
+    if (instrumentations and "strands" in instrumentations) or wrapped_strands_agents:
+        try:
+            from .strands import instrument_strands
+
+            instrument_strands(provider)
+        except Exception as exc:
+            if debug:
+                logger.debug("Could not prepare Strands instrumentation: %s", exc)
+
     # NeatlogsSpanProcessor: pure pre-processing (attribute normalization + file logging)
     global _span_processor
     _span_processor = NeatlogsSpanProcessor(
@@ -1126,6 +1143,15 @@ def _perform_shutdown(
             logger.debug("Instrumentation cleanup failed or timed out: %s", result)
             success = False
         _instrumentation_manager = None
+
+    if "neatlogs.strands" in sys.modules:
+        try:
+            from .strands import release_default_strands
+
+            if tracer_provider is not None:
+                release_default_strands(tracer_provider)
+        except Exception:
+            pass
 
     # Drop the cached wrapper tracer (used by wrap()/trace processors like the
     # OpenAI Agents one) so the next init() rebinds it to the new provider. Also
