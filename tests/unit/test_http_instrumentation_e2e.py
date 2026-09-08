@@ -10,7 +10,13 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from opentelemetry.trace import SpanKind
 
 import neatlogs
-from neatlogs.core.span_processor import NeatlogsSpanProcessor, is_http_span
+from neatlogs.core.filtering_exporter import HttpFilteringSpanExporter
+from neatlogs.core.masking_exporter import MaskingSpanExporter
+from neatlogs.core.span_processor import (
+    CompletionMarkerSpanProcessor,
+    NeatlogsSpanProcessor,
+    is_http_span,
+)
 from neatlogs.instrumentation.manager import InstrumentationManager
 
 
@@ -23,6 +29,11 @@ class _SnapshotExporter(SpanExporter):
             {"name": span.name, "attributes": dict(span.attributes or {})} for span in spans
         )
         return SpanExportResult.SUCCESS
+
+
+class _FailureExporter(SpanExporter):
+    def export(self, spans):
+        return SpanExportResult.FAILURE
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -171,7 +182,15 @@ def test_empty_instrumentation_list_emits_no_client_span(local_http_url):
 def test_canonical_semantic_kind_wins_over_http_metadata():
     exporter = InMemorySpanExporter()
     provider = TracerProvider()
-    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    provider.add_span_processor(NeatlogsSpanProcessor(own_all_spans=True))
+    provider.add_span_processor(
+        SimpleSpanProcessor(
+            MaskingSpanExporter(
+                HttpFilteringSpanExporter(exporter),
+                lambda snapshot: snapshot,
+            )
+        )
+    )
     span = provider.get_tracer("opentelemetry.instrumentation.httpx").start_span(
         "rerank",
         kind=SpanKind.CLIENT,
@@ -186,4 +205,71 @@ def test_canonical_semantic_kind_wins_over_http_metadata():
     finished = exporter.get_finished_spans()
     assert len(finished) == 1
     assert not is_http_span(finished[0])
+    assert finished[0].attributes["neatlogs.span.kind"] == "reranker"
+    provider.shutdown()
+
+
+def test_post_mask_http_root_does_not_emit_a_completion_marker():
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+
+    def reclassify_root(snapshot):
+        if snapshot["name"] == "workflow":
+            snapshot["attributes"]["neatlogs.span.kind"] = "HTTP"
+        return snapshot
+
+    lifecycle = NeatlogsSpanProcessor(mask=reclassify_root, own_all_spans=True)
+    completion = CompletionMarkerSpanProcessor(lifecycle, provider.get_tracer("neatlogs.internal"))
+    final_filter = HttpFilteringSpanExporter(
+        exporter,
+        on_accepted=completion.accept_exported_root,
+        on_rejected=completion.reject_exported_root,
+    )
+    provider.add_span_processor(lifecycle)
+    provider.add_span_processor(
+        SimpleSpanProcessor(
+            MaskingSpanExporter(
+                final_filter,
+                reclassify_root,
+                on_dropped=completion.reject_exported_root,
+            )
+        )
+    )
+    provider.add_span_processor(completion)
+
+    tracer = provider.get_tracer("neatlogs.test")
+    with tracer.start_as_current_span("workflow", attributes={"neatlogs.span.kind": "WORKFLOW"}):
+        tracer.start_span("tool", attributes={"neatlogs.span.kind": "TOOL"}).end()
+
+    provider.force_flush()
+    assert [span.name for span in exporter.get_finished_spans()] == ["tool"]
+    provider.shutdown()
+
+
+def test_failed_root_export_does_not_emit_a_completion_marker():
+    marker_exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    lifecycle = NeatlogsSpanProcessor(own_all_spans=True)
+    completion = CompletionMarkerSpanProcessor(lifecycle, provider.get_tracer("neatlogs.internal"))
+    provider.add_span_processor(lifecycle)
+    provider.add_span_processor(
+        SimpleSpanProcessor(
+            HttpFilteringSpanExporter(
+                _FailureExporter(),
+                on_accepted=completion.accept_exported_root,
+                on_rejected=completion.reject_exported_root,
+            )
+        )
+    )
+    provider.add_span_processor(SimpleSpanProcessor(marker_exporter))
+    provider.add_span_processor(completion)
+
+    provider.get_tracer("neatlogs.test").start_span(
+        "workflow", attributes={"neatlogs.span.kind": "WORKFLOW"}
+    ).end()
+
+    provider.force_flush()
+    assert all(
+        span.name != "neatlogs.trace.complete" for span in marker_exporter.get_finished_spans()
+    )
     provider.shutdown()

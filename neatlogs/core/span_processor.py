@@ -18,6 +18,7 @@ from opentelemetry.trace import SpanKind
 
 from .attribute_processor import UnifiedAttributeProcessor
 from .logger import get_logger
+from .span_kind import SEMANTIC_SPAN_KINDS, resolve_explicit_span_kind
 
 logger = get_logger()
 
@@ -73,40 +74,15 @@ _HTTP_ATTRIBUTE_KEYS = (
     "url.full",
 )
 
-_SEMANTIC_SPAN_KINDS = frozenset(
-    {
-        "WORKFLOW",
-        "AGENT",
-        "CHAIN",
-        "TOOL",
-        "RETRIEVER",
-        "EMBEDDING",
-        "GUARDRAIL",
-        "LLM",
-        "RERANKER",
-        "VECTOR_STORE",
-        "TASK",
-        "EVALUATOR",
-        "LOG",
-        "MEMORY",
-        "MCP_TOOL",
-    }
-)
-
 
 def is_http_span(span) -> bool:
     """Return whether a span represents HTTP transport rather than AI semantics."""
     try:
         attrs = span.attributes or {}
-        neatlogs_kind = str(attrs.get("neatlogs.span.kind") or "").upper()
-        openinference_kind = str(attrs.get("openinference.span.kind") or "").upper()
-        if neatlogs_kind == "HTTP":
+        resolved_kind = resolve_explicit_span_kind(attrs).upper()
+        if resolved_kind == "HTTP":
             return True
-        if neatlogs_kind in _SEMANTIC_SPAN_KINDS:
-            return False
-        if openinference_kind == "HTTP":
-            return True
-        if openinference_kind in _SEMANTIC_SPAN_KINDS:
+        if resolved_kind in SEMANTIC_SPAN_KINDS:
             return False
         scope = getattr(span, "instrumentation_scope", None)
         scope_name = getattr(scope, "name", "") or ""
@@ -586,7 +562,8 @@ class NeatlogsSpanProcessor(SpanProcessor):
                 if self.emit_completion_markers:
                     self._emit_completion_marker(span, trace_id, resource_attrs)
                 elif self._completion_coordination_enabled:
-                    self._completion_eligible_roots.add(span.context.span_id)
+                    with self._active_spans_lock:
+                        self._completion_eligible_roots.add(span.context.span_id)
 
         finally:
             if not self._completion_coordination_enabled:
@@ -705,13 +682,12 @@ class NeatlogsSpanProcessor(SpanProcessor):
         return self.own_all_spans or context_owned or _is_neatlogs_scope_span(span)
 
     def consume_completion_eligibility(self, span: ReadableSpan) -> bool:
-        if self._closed:
-            return False
         span_id = span.context.span_id
-        if span_id not in self._completion_eligible_roots:
-            return False
-        self._completion_eligible_roots.discard(span_id)
-        return True
+        with self._active_spans_lock:
+            if self._closed or span_id not in self._completion_eligible_roots:
+                return False
+            self._completion_eligible_roots.discard(span_id)
+            return True
 
     def _accumulate_or_backfill_root_io(self, span: ReadableSpan) -> None:
         """Client-side root I/O backfill for I/O-less roots.
@@ -956,12 +932,7 @@ class NeatlogsSpanProcessor(SpanProcessor):
 
 
 class CompletionMarkerSpanProcessor(SpanProcessor):
-    """Emit completion only after earlier processors have accepted the root.
-
-    OpenTelemetry invokes processors in registration order. Register this after
-    the transport ``BatchSpanProcessor`` so the root enters the export queue
-    before its ``neatlogs.trace.complete`` marker.
-    """
+    """Emit completion only after the final post-mask exporter accepts a root."""
 
     def __init__(self, span_processor: NeatlogsSpanProcessor, tracer=None):
         self._span_processor = span_processor
@@ -976,22 +947,22 @@ class CompletionMarkerSpanProcessor(SpanProcessor):
         return None
 
     def on_end(self, span: ReadableSpan) -> None:
-        try:
-            if self._closed or span.name == "neatlogs.trace.complete":
-                return
-            if span.parent or not self._span_processor.owns_span(span):
-                return
-            if not self._span_processor.consume_completion_eligibility(span):
-                return
-            with self._lock:
-                if self._defer_markers:
-                    self._deferred_roots.append(span)
-                    return
-                # Emit while holding the same lock used by begin_shutdown(), so
-                # defer choice and marker creation are one ordered operation.
+        self._span_processor.mark_downstream_complete(span)
+
+    def accept_exported_root(self, span: ReadableSpan) -> None:
+        if self._closed or span.name == "neatlogs.trace.complete" or span.parent:
+            return
+        if not self._span_processor.consume_completion_eligibility(span):
+            return
+        with self._lock:
+            if self._defer_markers:
+                self._deferred_roots.append(span)
+            else:
                 self._emit(span)
-        finally:
-            self._span_processor.mark_downstream_complete(span)
+
+    def reject_exported_root(self, span: ReadableSpan) -> None:
+        if span.name != "neatlogs.trace.complete" and not span.parent:
+            self._span_processor.consume_completion_eligibility(span)
 
     def begin_shutdown(self) -> None:
         with self._lock:
