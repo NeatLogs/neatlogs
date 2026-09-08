@@ -5,13 +5,21 @@ Instrumentation manager.
 import importlib
 import json
 import logging
+import threading
+import weakref
 from functools import wraps
-from typing import List, Optional, Set
+from typing import Any, List, Optional, Set
 
 from opentelemetry.instrumentation.threading import ThreadingInstrumentor
-from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace import ReadableSpan, SpanProcessor, TracerProvider
+from opentelemetry.trace import Span
 
-from .openinference_isolation import provider_for_openinference
+from .http_context_propagation import patch_http_context_propagation
+from .openinference_isolation import (
+    provider_for_native_instrumentation,
+    provider_for_openinference,
+)
+from .preprocessing import add_provider_preprocessor, remove_provider_preprocessor
 from .registry import INSTRUMENTATION_REGISTRY, get_libraries_by_tag
 
 logger = logging.getLogger(__name__)
@@ -28,6 +36,39 @@ import contextvars
 _EMBEDDING_INPUT_TEXTS: "contextvars.ContextVar[Optional[List[str]]]" = contextvars.ContextVar(
     "neatlogs_embedding_input_texts", default=None
 )
+_NOT_SET = object()
+
+
+class _ManagedSpanProcessor(SpanProcessor):
+    """Deactivate an attached third-party processor without owning its provider."""
+
+    def __init__(self, delegate: SpanProcessor) -> None:
+        self._delegate = delegate
+        self._active = True
+        self._lock = threading.RLock()
+
+    def on_start(self, span: Span, parent_context=None) -> None:
+        with self._lock:
+            if self._active:
+                self._delegate.on_start(span, parent_context)
+
+    def on_end(self, span: ReadableSpan) -> None:
+        with self._lock:
+            if self._active:
+                self._delegate.on_end(span)
+
+    def shutdown(self) -> None:
+        with self._lock:
+            if not self._active:
+                return
+            self._active = False
+            self._delegate.shutdown()
+
+    def force_flush(self, timeout_millis: int = 30000) -> bool:
+        with self._lock:
+            if not self._active:
+                return True
+            return self._delegate.force_flush(timeout_millis)
 
 
 class InstrumentationManager:
@@ -39,6 +80,73 @@ class InstrumentationManager:
         self.debug = debug
         self.excluded_urls = excluded_urls
         self.instrumented: Set[str] = set()
+        self._prepared: Set[str] = set()
+        self._pydantic_ai_previous_default: Any = _NOT_SET
+        self._pydantic_ai_installed_default: Any = None
+        self._pydantic_ai_lock = threading.RLock()
+        self._pydantic_ai_closing = False
+        self._pydantic_ai_processors_by_provider: (
+            "weakref.WeakKeyDictionary[Any, _ManagedSpanProcessor]"
+        ) = weakref.WeakKeyDictionary()
+
+    def prepare_span_processors(self, libraries: Optional[List[str]] = None) -> None:
+        """Install processors that must run before Neatlogs' export processor."""
+        if "pydantic_ai" not in (libraries or []) or not self._is_library_installed("pydantic_ai"):
+            return
+
+        try:
+            from openinference.instrumentation.pydantic_ai import OpenInferenceSpanProcessor
+            from pydantic_ai import Agent
+            from pydantic_ai.models.instrumented import InstrumentationSettings
+
+            from ..pydantic_ai import set_native_auto_instrumentation
+
+            def ensure_pydantic_ai_provider(provider: Any) -> None:
+                with self._pydantic_ai_lock:
+                    if self._pydantic_ai_closing:
+                        return
+                    if provider in self._pydantic_ai_processors_by_provider:
+                        return
+                    processor = _ManagedSpanProcessor(OpenInferenceSpanProcessor())
+                    installed = add_provider_preprocessor(provider, "pydantic_ai", processor)
+                    self._pydantic_ai_processors_by_provider[provider] = installed
+
+            self._pydantic_ai_previous_default = Agent._instrument_default
+            ensure_pydantic_ai_provider(self.provider)
+
+            settings = InstrumentationSettings(
+                tracer_provider=provider_for_native_instrumentation(
+                    self.provider,
+                    module_prefixes=("pydantic_ai",),
+                    ensure_provider=ensure_pydantic_ai_provider,
+                ),
+                include_content=True,
+            )
+            Agent.instrument_all(settings)
+            self._pydantic_ai_installed_default = settings
+            set_native_auto_instrumentation(True)
+            self._prepared.add("pydantic_ai")
+        except Exception as exc:
+            try:
+                from pydantic_ai import Agent
+
+                from ..pydantic_ai import set_native_auto_instrumentation
+
+                if Agent._instrument_default is self._pydantic_ai_installed_default:
+                    Agent.instrument_all(self._pydantic_ai_previous_default)
+                set_native_auto_instrumentation(False)
+            except Exception:
+                pass
+            self._remove_pydantic_ai_processors()
+            logger.warning("pydantic_ai native setup failed: %s", exc)
+
+    def _remove_pydantic_ai_processors(self) -> None:
+        with self._pydantic_ai_lock:
+            self._pydantic_ai_closing = True
+            providers = list(self._pydantic_ai_processors_by_provider)
+            self._pydantic_ai_processors_by_provider.clear()
+        for provider in providers:
+            remove_provider_preprocessor(provider, "pydantic_ai")
 
     def instrument_threading(self) -> None:
         try:
@@ -94,6 +202,12 @@ class InstrumentationManager:
           2. OpenInference (primary — rich semantic attributes, no duplicates)
           3. Stop — no OpenLLMetry fallback for AI libraries
         """
+        if library == "pydantic_ai" and library in self._prepared:
+            self.instrumented.add(library)
+            if self.debug:
+                logger.info("✅ pydantic_ai (native OpenTelemetry)")
+            return
+
         # CrewAI builds its telemetry singleton at import; suppress BEFORE the
         # install-check below imports it, else the singleton comes up armed.
         if library == "crewai":
@@ -258,6 +372,20 @@ class InstrumentationManager:
             ThreadingInstrumentor().uninstrument()
         except Exception:
             pass
+        if "pydantic_ai" in self._prepared:
+            try:
+                from pydantic_ai import Agent
+
+                from ..pydantic_ai import set_native_auto_instrumentation
+
+                if Agent._instrument_default is self._pydantic_ai_installed_default:
+                    Agent.instrument_all(self._pydantic_ai_previous_default)
+                set_native_auto_instrumentation(False)
+            except Exception:
+                pass
+            self._remove_pydantic_ai_processors()
+            self.instrumented.discard("pydantic_ai")
+            self._prepared.discard("pydantic_ai")
         for library in list(self.instrumented):
             if library == "google_adk":
                 try:

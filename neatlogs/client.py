@@ -53,6 +53,7 @@ from .core.upload_authority import (
 )
 from .core.upload_authority import uploads_enabled as resolve_uploads_enabled
 from .errors import NeatlogsConfigurationError
+from .instrumentation.preprocessing import ensure_provider_preprocessor
 from .version import __version__
 
 
@@ -153,6 +154,8 @@ class Client:
                 self.tracer_provider._resource = self.tracer_provider.resource.merge(resource)
             except Exception:
                 pass
+
+        ensure_provider_preprocessor(self.tracer_provider)
 
         self._span_processor = NeatlogsSpanProcessor(
             mask=mask,
