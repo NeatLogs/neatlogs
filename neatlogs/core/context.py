@@ -7,6 +7,21 @@ from typing import Any, Callable, Dict, Optional, Union
 
 from opentelemetry import trace as otel_trace
 
+from ..errors import NeatlogsConfigurationError
+
+
+def _reject_http_span_kind(kind: Any, attributes: Dict[str, Any]) -> None:
+    candidates = (
+        kind,
+        attributes.get("neatlogs.span.kind"),
+        attributes.get("openinference.span.kind"),
+    )
+    if any(str(value or "").strip().upper() == "HTTP" for value in candidates):
+        raise NeatlogsConfigurationError(
+            "HTTP spans are not supported. Trace the semantic LLM, TOOL, "
+            "RETRIEVER, or other AI operation instead."
+        )
+
 
 @contextmanager
 def trace(
@@ -111,6 +126,8 @@ def trace(
         >>> # ✅ CORRECT: Just call it
         >>> my_workflow()
     """
+    _reject_http_span_kind(kind, attributes)
+
     import json
     import logging
 

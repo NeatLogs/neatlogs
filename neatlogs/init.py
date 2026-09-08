@@ -38,6 +38,7 @@ from .core.delivery import (
     ObservableBatchLogRecordProcessor,
     ObservableBatchSpanProcessor,
 )
+from .core.filtering_exporter import HttpFilteringSpanExporter
 from .core.logger import get_logger
 from .core.media import PendingMediaStore, set_default_media_store
 from .core.media_exporter import TypedMediaLogExporter, TypedMediaSpanExporter
@@ -54,6 +55,8 @@ from .instrumentation.preprocessing import ensure_provider_preprocessor
 from .version import __version__
 
 logger = get_logger()
+
+_UNSUPPORTED_HTTP_INSTRUMENTATIONS = frozenset({"http", "requests", "httpx", "urllib3", "aiohttp"})
 
 
 _initialized = False
@@ -110,6 +113,20 @@ def _trace_sampler(sample_rate: float) -> ParentBased:
     if not math.isfinite(rate) or rate < 0.0 or rate > 1.0:
         raise NeatlogsConfigurationError("sample_rate must be a finite number from 0.0 to 1.0")
     return ParentBased(root=TraceIdRatioBased(rate))
+
+
+def _validate_instrumentations(instrumentations: Optional[List[str]]) -> None:
+    requested = {
+        str(item).strip().lower() for item in (instrumentations or []) if str(item).strip()
+    }
+    unsupported = sorted(requested & _UNSUPPORTED_HTTP_INSTRUMENTATIONS)
+    if unsupported:
+        raise NeatlogsConfigurationError(
+            "HTTP client instrumentation is not supported: "
+            + ", ".join(unsupported)
+            + ". Instrument the provider SDK or wrap the operation in a semantic "
+            "LLM, TOOL, RETRIEVER, or other Neatlogs span instead."
+        )
 
 
 def _restore_shutdown_signal_handlers() -> None:
@@ -284,7 +301,9 @@ def init(
                  wrapper-only code via ``with neatlogs.identify(session_id=...,
                  end_user_id=...)``.
         tags: Global tags for all traces (list of strings only, e.g., ['production', 'api-v2'])
-        instrumentations: Specific libraries to instrument
+        instrumentations: Specific AI/provider/framework libraries to instrument.
+              HTTP clients are intentionally unsupported; trace the semantic
+              operation around a raw transport call instead.
         sample_rate: Trace sampling rate (0.0-1.0)
         batch_size: Max spans per batch
         flush_interval: Seconds between batch flushes
@@ -342,6 +361,7 @@ def init(
     """
     global _initialized, _init_signature, _shutdown_worker
 
+    _validate_instrumentations(instrumentations)
     uploads_enabled_resolved = resolve_uploads_enabled(
         uploads_enabled, os.getenv("NEATLOGS_UPLOADS_ENABLED")
     )
@@ -602,30 +622,7 @@ def init(
             compression=Compression.Gzip,
             session=build_otlp_session(),
         )
-        # Wrap the exporter so rootless infra-HTTP auto-spans (boot pings, dependency
-        # warmups, outbound fetches outside any traced request) are never sent — on
-        # their own they're junk rootless traces the backend can't simplify. Nested
-        # HTTP spans (with a parent) still export normally.
         from .core.masking_exporter import MaskingSpanExporter
-        from .core.span_processor import is_rootless_infra_http
-
-        class _FilteredOTLPExporter:
-            def __init__(self, inner):
-                self._inner = inner
-
-            def export(self, spans):
-                from opentelemetry.sdk.trace.export import SpanExportResult
-
-                kept = [s for s in spans if not is_rootless_infra_http(s)]
-                if not kept:
-                    return SpanExportResult.SUCCESS
-                return self._inner.export(kept)
-
-            def shutdown(self):
-                return self._inner.shutdown()
-
-            def force_flush(self, timeout_millis: int = 30000):
-                return self._inner.force_flush(timeout_millis)
 
         limited_span_exporter = ByteLimitedSpanExporter(
             otlp_exporter,
@@ -638,15 +635,28 @@ def init(
             _media_store,
             diagnostics=_delivery_diagnostics,
         )
+        completion_processor = CompletionMarkerSpanProcessor(
+            _span_processor,
+            provider.get_tracer("neatlogs.internal"),
+        )
+        filtered_limited_span_exporter = HttpFilteringSpanExporter(
+            limited_span_exporter,
+            media_store=_media_store,
+            on_accepted=completion_processor.accept_exported_root,
+            on_rejected=completion_processor.reject_exported_root,
+        )
         batch_processor = ObservableBatchSpanProcessor(
-            _FilteredOTLPExporter(
+            HttpFilteringSpanExporter(
                 MaskingSpanExporter(
-                    limited_span_exporter,
+                    filtered_limited_span_exporter,
                     mask,
                     diagnostics=_delivery_diagnostics,
                     media_store=_media_store,
                     doctor_capture=_doctor_probe,
-                )
+                    on_dropped=completion_processor.reject_exported_root,
+                ),
+                media_store=_media_store,
+                on_rejected=completion_processor.reject_exported_root,
             ),
             max_export_batch_size=batch_size,
             max_queue_size=export_queue_capacity(batch_size),
@@ -656,10 +666,6 @@ def init(
         provider.add_span_processor(batch_processor)
         # Registered after the batch processor so a root is queued for export
         # before the completion marker that triggers backend finalization.
-        completion_processor = CompletionMarkerSpanProcessor(
-            _span_processor,
-            provider.get_tracer("neatlogs.internal"),
-        )
         provider.add_span_processor(completion_processor)
         global _transport_span_processors
         _transport_span_processors = [batch_processor, completion_processor]
@@ -793,6 +799,17 @@ def flush(timeout_millis: int = 30000) -> bool:
             success = (ok is None or bool(ok)) and success
         except Exception as e:
             logger.error(f"Error flushing spans: {e}", exc_info=True)
+            success = False
+
+    # A root is accepted only at the final post-mask export boundary. That
+    # acceptance queues its completion marker, so drain the trace batch once
+    # more to include the newly queued marker in this flush contract.
+    if _transport_span_processors:
+        try:
+            ok = _transport_span_processors[0].force_flush(timeout_millis=timeout_millis)
+            success = (ok is None or bool(ok)) and success
+        except Exception as e:
+            logger.error(f"Error flushing completion markers: {e}", exc_info=True)
             success = False
 
     return success
@@ -994,8 +1011,7 @@ def _perform_shutdown(
             success = (result is None or bool(result)) and success
             logger.debug("Log provider shut down successfully")
 
-    # Root end creates the completion marker, so it must happen only after all
-    # buffered LOG records have drained.
+    # Root acceptance creates the completion marker, so logs must drain first.
     if span_processor:
         completed, result = bounded_call(
             lambda: span_processor.end_active_spans(termination_reason),
@@ -1024,6 +1040,18 @@ def _perform_shutdown(
             logger.warning("Timed out waiting for ending spans to reach the export queue")
             success = False
     if completion_span_processor is not None:
+        if transport_span_processors:
+            completed, result = bounded_call(
+                lambda: transport_span_processors[0].force_flush(
+                    timeout_millis=max(0, int((deadline - time.monotonic()) * 1000))
+                ),
+                deadline,
+                synchronous=synchronous,
+                worker=shutdown_worker,
+            )
+            if not completed or (result is not None and not bool(result)):
+                logger.warning("Pre-completion span flush failed or timed out")
+                success = False
         completed, result = bounded_call(
             completion_span_processor.emit_deferred,
             deadline,
@@ -1033,6 +1061,18 @@ def _perform_shutdown(
         if not completed:
             logger.warning("Completion marker emission failed or timed out: %s", result)
             success = False
+        if transport_span_processors:
+            completed, result = bounded_call(
+                lambda: transport_span_processors[0].force_flush(
+                    timeout_millis=max(0, int((deadline - time.monotonic()) * 1000))
+                ),
+                deadline,
+                synchronous=synchronous,
+                worker=shutdown_worker,
+            )
+            if not completed or (result is not None and not bool(result)):
+                logger.warning("Completion marker flush failed or timed out")
+                success = False
 
     if tracer_provider:
         if owns_tracer_provider:

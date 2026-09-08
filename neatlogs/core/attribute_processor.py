@@ -11,6 +11,7 @@ from opentelemetry.trace import SpanKind
 
 from .instrumentation_scope_parser import enrich_with_scope_detection
 from .logger import get_logger
+from .span_kind import normalize_explicit_span_kind, resolve_explicit_span_kind
 
 # Matches Python object repr strings like:
 #   <function BaseTool.<lambda> at 0x110107be0>
@@ -1024,6 +1025,14 @@ class UnifiedAttributeProcessor:
         consumed: set[str] = set()
         self._map_recursive(mappings, attrs, unified, consumed)
 
+        span_kind_config = mappings.get("span_kind", {})
+        explicit_kind = normalize_explicit_span_kind(
+            attrs,
+            span_kind_config.get("values", {}) if isinstance(span_kind_config, dict) else {},
+        )
+        if explicit_kind:
+            unified["neatlogs.span.kind"] = explicit_kind
+
         keep_as_is = self.mapping.get("keep_as_is", {}).get("attributes", [])
         for key in keep_as_is:
             if key in attrs:
@@ -1073,7 +1082,7 @@ class UnifiedAttributeProcessor:
         llm_request_type = attrs.get("llm.request.type", "").lower()
         gen_ai_operation = attrs.get("gen_ai.operation.name", "").lower()
         span_name_lower = attrs.get("_span_name", "").lower()
-        explicit_kind = attrs.get("openinference.span.kind") or attrs.get("neatlogs.span.kind")
+        explicit_kind = resolve_explicit_span_kind(attrs)
 
         if llm_request_type == "rerank" or gen_ai_operation == "rerank":
             unified["neatlogs.span.kind"] = "reranker"

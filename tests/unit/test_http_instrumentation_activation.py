@@ -1,59 +1,36 @@
-from types import SimpleNamespace
-
 import pytest
-from opentelemetry.sdk.trace import TracerProvider
 
-from neatlogs.instrumentation.manager import InstrumentationManager
+import neatlogs
+from neatlogs.errors import NeatlogsConfigurationError
+from neatlogs.instrumentation.registry import INSTRUMENTATION_REGISTRY
+
+
+@pytest.mark.parametrize("library", ["http", "requests", "httpx", "urllib3", "aiohttp"])
+def test_http_instrumentation_is_rejected(library):
+    with pytest.raises(NeatlogsConfigurationError, match="HTTP client instrumentation"):
+        neatlogs.init(
+            api_key="unused",
+            disable_export=True,
+            instrumentations=[library],
+            register_shutdown_handlers=False,
+        )
+
+
+def test_http_instrumentors_are_not_published_in_registry():
+    assert "http" not in INSTRUMENTATION_REGISTRY["tags"]
+    for library in ("requests", "httpx", "urllib3", "aiohttp"):
+        assert library not in INSTRUMENTATION_REGISTRY["libraries"]
 
 
 @pytest.mark.parametrize(
-    ("library", "module_name", "class_name"),
+    "kind, attributes",
     [
-        ("requests", "opentelemetry.instrumentation.requests", "RequestsInstrumentor"),
-        ("httpx", "opentelemetry.instrumentation.httpx", "HTTPXClientInstrumentor"),
-        ("urllib3", "opentelemetry.instrumentation.urllib3", "URLLib3Instrumentor"),
-        ("aiohttp", "opentelemetry.instrumentation.aiohttp_client", "AioHttpClientInstrumentor"),
+        ("HTTP", {}),
+        ("TOOL", {"neatlogs.span.kind": "http"}),
+        ("TOOL", {"openinference.span.kind": "HTTP"}),
     ],
 )
-def test_explicit_http_key_activates_otel_instrumentor(
-    monkeypatch, library, module_name, class_name
-):
-    calls = []
-
-    class FakeInstrumentor:
-        def instrument(self, **kwargs):
-            calls.append(kwargs)
-
-    manager = InstrumentationManager(
-        TracerProvider(), excluded_urls="https://dev-cloud.neatlogs.com"
-    )
-    monkeypatch.setattr(manager, "_is_library_installed", lambda name: name == library)
-    monkeypatch.setattr(
-        "neatlogs.instrumentation.manager.importlib.import_module",
-        lambda name: (
-            SimpleNamespace(**{class_name: FakeInstrumentor}) if name == module_name else None
-        ),
-    )
-
-    manager.instrument(libraries=[library])
-
-    assert manager.instrumented == {library}
-    assert calls == [
-        {
-            "tracer_provider": manager.provider,
-            "excluded_urls": "https://dev-cloud.neatlogs.com",
-        }
-    ]
-
-
-def test_empty_instrumentation_list_does_not_activate_any_client(monkeypatch):
-    manager = InstrumentationManager(TracerProvider())
-    monkeypatch.setattr(
-        manager,
-        "_instrument_library",
-        lambda *args, **kwargs: pytest.fail("HTTP clients must remain opt-in"),
-    )
-
-    manager.instrument(libraries=[])
-
-    assert manager.instrumented == set()
+def test_manual_trace_rejects_http_kind(kind, attributes):
+    with pytest.raises(NeatlogsConfigurationError, match="HTTP spans are not supported"):
+        with neatlogs.trace("transport", kind=kind, **attributes):
+            pass

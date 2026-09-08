@@ -14,7 +14,6 @@ from opentelemetry.instrumentation.threading import ThreadingInstrumentor
 from opentelemetry.sdk.trace import ReadableSpan, SpanProcessor, TracerProvider
 from opentelemetry.trace import Span
 
-from .http_context_propagation import patch_http_context_propagation
 from .openinference_isolation import (
     provider_for_native_instrumentation,
     provider_for_openinference,
@@ -23,8 +22,6 @@ from .preprocessing import add_provider_preprocessor, remove_provider_preprocess
 from .registry import INSTRUMENTATION_REGISTRY, get_libraries_by_tag
 
 logger = logging.getLogger(__name__)
-
-_HTTP_LIBRARIES = frozenset({"requests", "httpx", "urllib3", "aiohttp"})
 
 # Holds the raw, pre-tokenization text passed to LangChain embedding wrappers
 # (OpenAIEmbeddings.embed_documents/embed_query). LangChain tokenizes text into
@@ -257,17 +254,6 @@ class InstrumentationManager:
                 logger.warning(f"⚠️  Unknown library: {library}")
             return
 
-        if library in _HTTP_LIBRARIES:
-            try:
-                self._instrument_library(library, convention="openllmetry")
-                self.instrumented.add(library)
-                if self.debug:
-                    logger.info(f"✅ {library} (OpenTelemetry HTTP client)")
-            except Exception as e:
-                if self.debug:
-                    logger.warning(f"⚠️  {library} (OpenTelemetry HTTP client): {e}")
-            return
-
         # CrewAI: neatlogs' own class-level hooks (crewai.py) build the full
         # crew→task→agent→llm→tool tree as a single neatlogs-owned trace, so bare
         # crews under instrumentations=["crewai"] are covered without any wrap()
@@ -325,18 +311,12 @@ class InstrumentationManager:
             instrumentor_class_name = self._get_instrumentor_class_name(library, convention)
             instrumentor_class = getattr(module, instrumentor_class_name)
 
-            is_http_lib = library in _HTTP_LIBRARIES
             tracer_provider = (
                 provider_for_openinference(self.provider)
                 if convention == "openinference"
                 else self.provider
             )
-            if is_http_lib and self.excluded_urls:
-                instrumentor_class().instrument(
-                    tracer_provider=tracer_provider, excluded_urls=self.excluded_urls
-                )
-            else:
-                instrumentor_class().instrument(tracer_provider=tracer_provider)
+            instrumentor_class().instrument(tracer_provider=tracer_provider)
 
             # Post-instrument patches for OpenInference libraries
             if convention == "openinference":
@@ -1685,9 +1665,6 @@ class InstrumentationManager:
                 if convention == "openinference"
                 else "LangchainInstrumentor"
             ),
-            "urllib3": "URLLib3Instrumentor",
-            "httpx": "HTTPXClientInstrumentor",
-            "aiohttp": "AioHttpClientInstrumentor",
             "llamaindex": "LlamaIndexInstrumentor",
             "google_generativeai": "GoogleGenerativeAIInstrumentor",
             "google_genai": "GoogleGenAIInstrumentor",
