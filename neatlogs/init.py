@@ -232,6 +232,21 @@ def _serialize_init(func):
     return wrapped
 
 
+def _resolve_init_endpoint(endpoint: Optional[str]) -> str:
+    """Resolve the ingest endpoint: explicit ``endpoint=`` wins, then the
+    NEATLOGS_ENDPOINT env var, then the production default.
+
+    Matches the Go SDK's Config.Endpoint fallback and the doctor/wrapper
+    paths, which already honor NEATLOGS_ENDPOINT.
+    """
+
+    explicit = (endpoint or "").strip()
+    if explicit:
+        return explicit
+    from_env = (os.environ.get("NEATLOGS_ENDPOINT") or "").strip()
+    return from_env or DEFAULT_INGEST_ENDPOINT
+
+
 def _configuration_signature(**values):
     api_key = values.pop("api_key")
     resolved_key = str(api_key).strip() if api_key is not None else ""
@@ -260,7 +275,7 @@ def _configuration_signature(**values):
 @_serialize_init
 def init(
     api_key: Optional[str] = None,
-    endpoint: str = DEFAULT_INGEST_ENDPOINT,
+    endpoint: Optional[str] = None,
     workflow_name: Optional[str] = None,
     user_id: Optional[str] = None,
     tags: Optional[List[str]] = None,
@@ -288,7 +303,9 @@ def init(
 
     Args:
         api_key: Neatlogs API key (or set NEATLOGS_API_KEY env var)
-        endpoint: Neatlogs backend endpoint
+        endpoint: Neatlogs backend endpoint (falls back to the NEATLOGS_ENDPOINT
+                 env var, then https://ingest.neatlogs.com; an explicit value
+                 wins over the env var)
         workflow_name: Logical grouping for traces
         user_id: Operator identifier — whoever is RUNNING the SDK (a developer, a
                  service account, the OS user). Propagates to all spans as a
@@ -365,6 +382,8 @@ def init(
     uploads_enabled_resolved = resolve_uploads_enabled(
         uploads_enabled, os.getenv("NEATLOGS_UPLOADS_ENABLED")
     )
+    endpoint = _resolve_init_endpoint(endpoint)
+
     candidate_signature = _configuration_signature(
         api_key=api_key,
         endpoint=endpoint,
