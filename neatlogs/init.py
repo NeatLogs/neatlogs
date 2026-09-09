@@ -233,12 +233,7 @@ def _serialize_init(func):
 
 
 def _resolve_init_endpoint(endpoint: Optional[str]) -> str:
-    """Resolve the ingest endpoint: explicit ``endpoint=`` wins, then the
-    NEATLOGS_ENDPOINT env var, then the production default.
-
-    Matches the Go SDK's Config.Endpoint fallback and the doctor/wrapper
-    paths, which already honor NEATLOGS_ENDPOINT.
-    """
+    """Explicit ``endpoint=`` wins, then NEATLOGS_ENDPOINT, then the prod default."""
 
     explicit = (endpoint or "").strip()
     if explicit:
@@ -304,8 +299,7 @@ def init(
     Args:
         api_key: Neatlogs API key (or set NEATLOGS_API_KEY env var)
         endpoint: Neatlogs backend endpoint (falls back to the NEATLOGS_ENDPOINT
-                 env var, then https://ingest.neatlogs.com; an explicit value
-                 wins over the env var)
+                 env var, then https://ingest.neatlogs.com)
         workflow_name: Logical grouping for traces
         user_id: Operator identifier — whoever is RUNNING the SDK (a developer, a
                  service account, the OS user). Propagates to all spans as a
