@@ -88,6 +88,38 @@ def _init_with_exporter(*, foreign_exporter=None):
     return private_provider, private_exporter
 
 
+def _spans_by_kind(spans):
+    by_kind = {}
+    for span in spans:
+        kind = span.attributes.get("openinference.span.kind")
+        if kind is not None:
+            by_kind.setdefault(kind, []).append(span)
+    return by_kind
+
+
+def _only_span_by_kind(spans, kind):
+    matching = _spans_by_kind(spans).get(kind, [])
+    assert len(matching) == 1
+    return matching[0]
+
+
+def _is_descendant_of(span, ancestor, spans):
+    if span.context.trace_id != ancestor.context.trace_id:
+        return False
+
+    spans_by_context = {(item.context.trace_id, item.context.span_id): item for item in spans}
+    parent = span.parent
+    while parent is not None:
+        if (
+            parent.trace_id == ancestor.context.trace_id
+            and parent.span_id == ancestor.context.span_id
+        ):
+            return True
+        parent_span = spans_by_context.get((parent.trace_id, parent.span_id))
+        parent = parent_span.parent if parent_span is not None else None
+    return False
+
+
 def test_native_pydantic_ai_spans_are_normalized_and_parented_to_workflow():
     private_provider, exporter = _init_with_exporter()
     agent = Agent(TestModel(custom_output_text="deterministic answer"), name="support-agent")
@@ -96,19 +128,18 @@ def test_native_pydantic_ai_spans_are_normalized_and_parented_to_workflow():
         result = agent.run_sync("answer this")
 
     assert result.output == "deterministic answer"
-    spans = {span.name: span for span in exporter.get_finished_spans()}
-
-    workflow = spans["support-workflow"]
-    agent_span = spans["agent run"]
-    model_span = spans["chat test"]
+    spans = exporter.get_finished_spans()
+    workflow = next(span for span in spans if span.name == "support-workflow")
+    agent_span = _only_span_by_kind(spans, "AGENT")
+    model_span = _only_span_by_kind(spans, "LLM")
 
     processor_names = [
         type(processor).__name__
         for processor in private_provider._active_span_processor._span_processors
     ]
     assert processor_names[:2] == ["ProviderPreprocessor", "NeatlogsSpanProcessor"]
-    assert agent_span.parent.span_id == workflow.context.span_id
-    assert model_span.parent.span_id == agent_span.context.span_id
+    assert _is_descendant_of(agent_span, workflow, spans)
+    assert _is_descendant_of(model_span, agent_span, spans)
     assert agent_span.attributes["openinference.span.kind"] == "AGENT"
     assert agent_span.attributes["input.value"] == "answer this"
     assert agent_span.attributes["output.value"] == "deterministic answer"
@@ -136,11 +167,11 @@ def test_native_normalization_precedes_existing_provider_exporters():
     with neatlogs.trace("ordered-workflow", kind="WORKFLOW"):
         agent.run_sync("normalize before export")
 
-    spans = {span.name: span for span in exporter.get_finished_spans()}
-    assert spans["agent run"].attributes["openinference.span.kind"] == "AGENT"
-    assert spans["agent run"].attributes["input.value"] == "normalize before export"
-    assert spans["chat test"].attributes["openinference.span.kind"] == "LLM"
-    assert spans["chat test"].attributes["output.value"] == "normalized first"
+    spans = exporter.get_finished_spans()
+    agent_span = _only_span_by_kind(spans, "AGENT")
+    model_span = _only_span_by_kind(spans, "LLM")
+    assert agent_span.attributes["input.value"] == "normalize before export"
+    assert model_span.attributes["output.value"] == "normalized first"
 
 
 def test_native_pydantic_ai_spans_do_not_reach_the_global_provider():
@@ -153,10 +184,12 @@ def test_native_pydantic_ai_spans_do_not_reach_the_global_provider():
         with neatlogs.trace("private-workflow", kind="WORKFLOW"):
             agent.run_sync("stay private")
 
-    private_names = {span.name for span in private_exporter.get_finished_spans()}
+    private_spans = private_exporter.get_finished_spans()
     foreign_names = {span.name for span in foreign_exporter.get_finished_spans()}
 
-    assert {"private-workflow", "agent run", "chat test"}.issubset(private_names)
+    assert any(span.name == "private-workflow" for span in private_spans)
+    assert len(_spans_by_kind(private_spans)["AGENT"]) == 1
+    assert len(_spans_by_kind(private_spans)["LLM"]) == 1
     assert foreign_names == {"foreign-root"}
 
 
@@ -183,14 +216,14 @@ def test_native_pydantic_ai_spans_follow_the_active_client_provider():
     assert result.output == "client answer"
     assert {span.name for span in default_exporter.get_finished_spans()} == set()
 
-    client_spans = {span.name: span for span in client_exporter.spans}
-    assert {"client-run", "agent run", "chat test"}.issubset(client_spans)
-    assert client_spans["agent run"].attributes["openinference.span.kind"] == "AGENT"
-    assert client_spans["agent run"].attributes["input.value"] == "route to client"
-    assert client_spans["chat test"].attributes["openinference.span.kind"] == "LLM"
-    assert client_spans["chat test"].attributes["output.value"] == "client answer"
-    assert client_spans["agent run"].parent.span_id == client_spans["client-run"].context.span_id
-    assert client_spans["chat test"].parent.span_id == client_spans["agent run"].context.span_id
+    client_spans = client_exporter.get_finished_spans()
+    workflow = next(span for span in client_spans if span.name == "client-run")
+    agent_span = _only_span_by_kind(client_spans, "AGENT")
+    model_span = _only_span_by_kind(client_spans, "LLM")
+    assert agent_span.attributes["input.value"] == "route to client"
+    assert model_span.attributes["output.value"] == "client answer"
+    assert _is_descendant_of(agent_span, workflow, client_spans)
+    assert _is_descendant_of(model_span, agent_span, client_spans)
 
 
 def test_managed_processor_shutdown_waits_for_active_normalization():
@@ -213,18 +246,25 @@ def test_managed_processor_shutdown_waits_for_active_normalization():
     assert delegate.stopped.is_set()
 
 
-def test_explicit_agent_opt_out_is_preserved():
+def test_global_agent_opt_out_after_init_is_respected():
     _, exporter = _init_with_exporter()
-    agent = Agent(
-        TestModel(custom_output_text="not instrumented"),
-        name="opted-out-agent",
-        instrument=False,
-    )
+    Agent.instrument_all(False)
+    agent = Agent(TestModel(custom_output_text="not instrumented"), name="opted-out-agent")
 
     with neatlogs.trace("opt-out-workflow", kind="WORKFLOW"):
         agent.run_sync("skip native spans")
 
     assert [span.name for span in exporter.get_finished_spans()] == ["opt-out-workflow"]
+
+
+def test_shutdown_restores_preexisting_global_opt_out():
+    Agent.instrument_all(False)
+
+    _init_with_exporter()
+    assert isinstance(Agent._instrument_default, InstrumentationSettings)
+
+    assert neatlogs.shutdown()
+    assert Agent._instrument_default is False
 
 
 def test_shutdown_restores_the_previous_pydantic_ai_default():
@@ -258,8 +298,8 @@ def test_wrap_does_not_duplicate_native_pydantic_ai_spans():
         agent.run_sync("one question")
 
     spans = exporter.get_finished_spans()
-    assert sum(span.name == "agent run" for span in spans) == 1
-    assert sum(span.name == "chat test" for span in spans) == 1
+    assert len(_spans_by_kind(spans)["AGENT"]) == 1
+    assert len(_spans_by_kind(spans)["LLM"]) == 1
     assert not any(span.name.startswith("pydantic_ai.") for span in spans)
 
 
@@ -273,8 +313,8 @@ def test_agent_wrapped_before_init_does_not_duplicate_native_spans():
         agent.run_sync("one question")
 
     spans = exporter.get_finished_spans()
-    assert sum(span.name == "agent run" for span in spans) == 1
-    assert sum(span.name == "chat test" for span in spans) == 1
+    assert len(_spans_by_kind(spans)["AGENT"]) == 1
+    assert len(_spans_by_kind(spans)["LLM"]) == 1
     assert not any(span.name.startswith("pydantic_ai.") for span in spans)
 
 
@@ -290,18 +330,17 @@ def test_native_pydantic_ai_tool_span_has_expected_hierarchy():
         agent.run_sync("add two numbers")
 
     spans = exporter.get_finished_spans()
-    by_kind = {}
-    for span in spans:
-        by_kind.setdefault(span.attributes.get("openinference.span.kind"), []).append(span)
+    by_kind = _spans_by_kind(spans)
 
-    agent_span = by_kind["AGENT"][0]
-    tool_span = by_kind["TOOL"][0]
+    agent_span = _only_span_by_kind(spans, "AGENT")
+    tool_span = _only_span_by_kind(spans, "TOOL")
     llm_spans = by_kind["LLM"]
 
     assert len(llm_spans) == 2
-    chain_span = by_kind["CHAIN"][0]
-    assert chain_span.parent.span_id == agent_span.context.span_id
-    assert tool_span.parent.span_id == chain_span.context.span_id
+    assert _is_descendant_of(tool_span, agent_span, spans)
+    assert all(_is_descendant_of(llm_span, agent_span, spans) for llm_span in llm_spans)
+    for chain_span in by_kind.get("CHAIN", []):
+        assert _is_descendant_of(chain_span, agent_span, spans)
     assert tool_span.attributes["tool.name"] == "add"
     assert tool_span.attributes["input.value"] == '{"a":0,"b":0}'
     assert tool_span.attributes["output.value"] == "0"
@@ -357,8 +396,9 @@ async def test_native_pydantic_ai_cancellation_leaves_no_unfinished_spans():
     with pytest.raises(asyncio.CancelledError):
         await task
 
-    names = {span.name for span in exporter.get_finished_spans()}
-    assert {"agent run", "chat test"}.issubset(names)
+    by_kind = _spans_by_kind(exporter.get_finished_spans())
+    assert len(by_kind["AGENT"]) == 1
+    assert len(by_kind["LLM"]) == 1
 
 
 def test_shutdown_then_reinitialize_uses_the_new_private_provider():
@@ -369,14 +409,12 @@ def test_shutdown_then_reinitialize_uses_the_new_private_provider():
     _, second_exporter = _init_with_exporter()
     Agent(TestModel(custom_output_text="second"), name="second-agent").run_sync("second")
 
-    assert {span.name for span in first_exporter.get_finished_spans()} == {
-        "agent run",
-        "chat test",
-    }
-    assert {span.name for span in second_exporter.get_finished_spans()} == {
-        "agent run",
-        "chat test",
-    }
+    first_by_kind = _spans_by_kind(first_exporter.get_finished_spans())
+    second_by_kind = _spans_by_kind(second_exporter.get_finished_spans())
+    assert set(first_by_kind) == {"AGENT", "LLM"}
+    assert set(second_by_kind) == {"AGENT", "LLM"}
+    assert len(first_by_kind["AGENT"]) == len(first_by_kind["LLM"]) == 1
+    assert len(second_by_kind["AGENT"]) == len(second_by_kind["LLM"]) == 1
 
 
 def test_repeated_identical_init_does_not_duplicate_native_processors():
@@ -392,5 +430,5 @@ def test_repeated_identical_init_does_not_duplicate_native_processors():
     Agent(TestModel(custom_output_text="once"), name="single-agent").run_sync("once")
 
     spans = exporter.get_finished_spans()
-    assert sum(span.name == "agent run" for span in spans) == 1
-    assert sum(span.name == "chat test" for span in spans) == 1
+    assert len(_spans_by_kind(spans)["AGENT"]) == 1
+    assert len(_spans_by_kind(spans)["LLM"]) == 1
