@@ -188,7 +188,9 @@ class _MaskRunner:
                 break
             active.pop(index, None)
             if succeeded and result is None:
-                results[index] = candidate
+                # A mask returning None drops the item entirely, matching the
+                # documented contract in the TypeScript and Go SDKs.
+                results[index] = None
             elif succeeded and isinstance(result, Mapping):
                 results[index] = dict(result)
             elif succeeded:

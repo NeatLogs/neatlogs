@@ -332,6 +332,7 @@ def init(
                    Default: "INFO".
         mask: Optional callable applied to every span dict before export.
               Receives the full span dict and must return the (possibly modified) dict.
+              Return None to drop the span entirely.
               Use this to redact PII from inputs, outputs, and attributes.
               Per-span masks (set via @span(mask=fn) or with trace(..., mask=fn))
               take precedence over this global mask.
